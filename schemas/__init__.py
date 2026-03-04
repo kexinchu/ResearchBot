@@ -1,1 +1,0 @@
-# Schemas for structured IO

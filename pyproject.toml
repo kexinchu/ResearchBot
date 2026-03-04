@@ -19,4 +19,4 @@ dev = ["pytest", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["orchestrator*", "agents*", "tools*", "eval*", "schemas*"]
+include = ["orchestrator*", "agents*", "tools*", "eval*"]
