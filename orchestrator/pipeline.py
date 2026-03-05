@@ -463,11 +463,14 @@ def main() -> None:
     parser.add_argument("--constraints", default=None, help="Problem description / constraints (default: venue)")
     parser.add_argument("--artifacts", default=None)
     parser.add_argument("--local", action="store_true", help="Use local LLM (vLLM)")
+    parser.add_argument("--browser", action="store_true", help="Use browser-based ChatGPT (no API key needed)")
     args = parser.parse_args()
 
+    import config
     if args.local:
-        import config
         config.set_use_local_llm(True)
+    if args.browser:
+        config.set_use_browser_llm(True)
 
     artifacts_root = args.artifacts or str(_REPO_ROOT / "artifacts")
     state = run_pipeline(args.topic, args.venue, artifacts_root, constraints=args.constraints)

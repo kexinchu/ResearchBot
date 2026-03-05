@@ -28,3 +28,15 @@ USE_LOCAL_LLM = _use_local_llm if _use_local_llm is not None else (
     os.environ.get("EFFICIENT_RESEARCH_LLM", "").strip().lower() == "local"
 )
 OPENAI_API_KEY, OPENAI_BASE_URL, MODEL = _compute_llm_config(USE_LOCAL_LLM)
+
+# ── Browser mode (ChatGPT web UI via Playwright) ─────────────────────────────
+# 通过浏览器自动化调用 ChatGPT 网页端，无需 API key。
+# 启用方式：EFFICIENT_RESEARCH_LLM=browser 或 CLI --browser
+USE_BROWSER_LLM: bool = (
+    os.environ.get("EFFICIENT_RESEARCH_LLM", "").strip().lower() == "browser"
+)
+
+def set_use_browser_llm(use_browser: bool) -> None:
+    """由 CLI --browser 调用，启用浏览器模式后全局生效。"""
+    global USE_BROWSER_LLM
+    USE_BROWSER_LLM = use_browser

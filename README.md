@@ -73,6 +73,15 @@ Venue: Workshop, 4-6 pages, double-column
 ./run.sh                    # 读取 input.md，使用 OpenAI API
 ./run.sh --local            # 使用本地 vLLM
 ./run.sh --input my.md      # 指定其他输入文件
+
+# 浏览器模式
+
+./start_chrome_debug.sh     # debug模式打开打开chrome 登陆chatGPT
+# on macOS
+/Applications/Google\ Chrome.app/Contents/Mac0S/Google\ Chrome \ 
+--remote-debugging-port=9222 \
+--user-data-dir=/tmp/chrome-devtools-9222
+./run.sh --browser          # 使用浏览器模式
 ```
 
 或直接调用 pipeline（适合调试）：

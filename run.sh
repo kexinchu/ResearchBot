@@ -4,14 +4,19 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_FILE=""
-VENV_DIR="${SCRIPT_DIR}/../auto-paper-reading/venv"
+VENV_DIR="${SCRIPT_DIR}/venv"
 USE_LOCAL=""
+USE_BROWSER=""
 
 # 解析可选参数
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
       USE_LOCAL="--local"
+      shift
+      ;;
+    --browser)
+      USE_BROWSER="--browser"
       shift
       ;;
     -i|--input)
@@ -98,15 +103,17 @@ echo "  Venue:    $VENUE"
 [[ -n "$CONSTRAINTS" ]] && echo "  Constraints: $CONSTRAINTS"
 LOCAL_LABEL="否"
 [ -n "$USE_LOCAL" ] && LOCAL_LABEL="是 (--local)"
+[ -n "$USE_BROWSER" ] && LOCAL_LABEL="浏览器模式 (--browser)"
 echo "  本地模型: $LOCAL_LABEL"
 echo "=============================================="
 
-# 使用与 env_prepare 一致的虚拟环境
-if [[ -d "$VENV_DIR" ]]; then
-  source "${VENV_DIR}/bin/activate"
-else
-  echo "提示: 未找到虚拟环境 $VENV_DIR，使用当前 Python。如需本地模型请先执行 ./env_prepare.sh"
+# 激活虚拟环境（必须）
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "错误: 未找到虚拟环境 $VENV_DIR"
+  echo "请先执行: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+  exit 1
 fi
+source "${VENV_DIR}/bin/activate"
 
 # --local 时预检本地 LLM 是否可达
 if [[ -n "$USE_LOCAL" ]]; then
@@ -123,6 +130,7 @@ cd "$SCRIPT_DIR"
 CMD=(python3 -m orchestrator.pipeline --topic "$TOPIC" --venue "$VENUE")
 [[ -n "$CONSTRAINTS" ]] && CMD+=(--constraints "$CONSTRAINTS")
 [[ -n "$USE_LOCAL" ]] && CMD+=(--local)
+[[ -n "$USE_BROWSER" ]] && CMD+=(--browser)
 "${CMD[@]}"
 
 echo ""

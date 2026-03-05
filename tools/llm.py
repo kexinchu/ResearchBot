@@ -29,12 +29,24 @@ def _strip_thinking(text: str) -> str:
     return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
 
+def _unwrap_single_list(text: str) -> str:
+    """If text is a JSON array containing exactly one dict, return that dict as JSON string.
+    ChatGPT web UI sometimes wraps its JSON output in [...] even when a dict is expected."""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+            return json.dumps(parsed[0])
+    except (json.JSONDecodeError, Exception):
+        pass
+    return text
+
+
 def _extract_json(text: str) -> str:
     """Try multiple strategies to extract valid JSON from LLM output."""
     # 1. Direct parse
     try:
         json.loads(text)
-        return text
+        return _unwrap_single_list(text)
     except json.JSONDecodeError:
         pass
     # 2. Markdown code block
@@ -43,7 +55,7 @@ def _extract_json(text: str) -> str:
         candidate = m.group(1).strip()
         try:
             json.loads(candidate)
-            return candidate
+            return _unwrap_single_list(candidate)
         except json.JSONDecodeError:
             pass
     # 3. First valid JSON object or array
@@ -74,10 +86,15 @@ def _extract_json(text: str) -> str:
                     candidate = text[start:i + 1]
                     try:
                         json.loads(candidate)
-                        return candidate
+                        return _unwrap_single_list(candidate)
                     except json.JSONDecodeError:
                         break
     return text
+
+
+def _is_browser_mode() -> bool:
+    import config
+    return bool(config.USE_BROWSER_LLM)
 
 
 def call_llm(
@@ -88,6 +105,10 @@ def call_llm(
     max_tokens: Optional[int] = None,
 ) -> str:
     """Returns assistant text. If json_mode, extracts and returns cleaned JSON string."""
+    if _is_browser_mode():
+        from tools.browser_llm import call_llm_browser
+        return call_llm_browser(system, user, json_mode=json_mode, max_tokens=max_tokens)
+
     client = get_client()
     model = model or get_model()
     local = _is_local_model()

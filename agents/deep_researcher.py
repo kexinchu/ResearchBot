@@ -61,7 +61,7 @@ def run(input_data: dict) -> dict:
             queries.append((q_short, 4, "arxiv"))
             queries.append((q_short, 3, "ss"))
 
-    unique = _parallel_search(queries, max_workers=6)
+    unique = _parallel_search(queries, max_workers=3)
 
     search_block = json.dumps(
         [{"title": r.get("title", ""), "snippet": r.get("snippet", ""), "url": r.get("url", "")} for r in unique],

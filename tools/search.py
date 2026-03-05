@@ -2,10 +2,14 @@
 import json
 import re
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
+
+# Global semaphore: limit concurrent ArXiv requests to avoid HTTP 429
+_arxiv_semaphore = threading.Semaphore(2)
 
 
 def _sanitize_query(query: str, max_len: int = 150) -> str:
@@ -100,22 +104,34 @@ def _search_web(query: str, max_results: int = 10) -> List[Dict[str, str]]:
 def _search_arxiv(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     try:
         import arxiv
-
-        clean_query = _sanitize_query(query)
-        client = arxiv.Client()
-        search = arxiv.Search(query=clean_query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
-        results = []
-        for r in client.results(search):
-            results.append({
-                "title": r.title,
-                "snippet": (r.summary or "")[:500],
-                "url": r.entry_id,
-            })
-        return results
     except ImportError:
         print("Warning: arxiv 包未安装。请执行: pip install arxiv", file=sys.stderr)
-    except Exception as e:
-        print(f"Warning: ArXiv search error: {e}", file=sys.stderr)
+        return []
+
+    clean_query = _sanitize_query(query)
+    # Limit concurrency and retry on 429
+    with _arxiv_semaphore:
+        for attempt in range(4):
+            try:
+                client = arxiv.Client(num_retries=1, delay_seconds=1.0)
+                search = arxiv.Search(query=clean_query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
+                results = []
+                for r in client.results(search):
+                    results.append({
+                        "title": r.title,
+                        "snippet": (r.summary or "")[:500],
+                        "url": r.entry_id,
+                    })
+                return results
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "Too Many Requests" in msg:
+                    wait = 2 ** attempt
+                    print(f"Warning: ArXiv rate-limited (429), retrying in {wait}s …", file=sys.stderr)
+                    time.sleep(wait)
+                else:
+                    print(f"Warning: ArXiv search error: {e}", file=sys.stderr)
+                    break
     return []
 
 
