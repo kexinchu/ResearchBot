@@ -50,7 +50,7 @@ If any element is missing, ADD it. If the abstract does not end with a numeric r
 
 - **Active voice**: "We propose" not "A method is proposed"
 - **No filler**: Delete "It is important to note that", "In this section we", "As can be seen from", "It is worth mentioning"
-- **No AI-sounding phrases**: Delete "delve into", "it is crucial", "comprehensive", "robust" (as adjective without evidence)
+- **No AI-sounding phrases**: Delete "delve into", "leverage", "it is crucial", "comprehensive", "robust" (as adjective without evidence). Align with [awesome-ai-research-writing](https://github.com/Leey21/awesome-ai-research-writing) — substantive, academic tone, no AI fluff.
 - **Consistent terminology**: Pick one name for each concept and use it everywhere
 - **Short sentences**: Max 30 words per sentence. Break longer ones.
 - **Paragraph topic sentences**: First sentence of each paragraph states the point clearly
@@ -64,4 +64,6 @@ If any element is missing, ADD it. If the abstract does not end with a numeric r
 
 ## Output format (strict JSON)
 
-Return a JSON object with key `"sections"` containing the same keys as the input: `abstract`, `intro`, `background`, `method`, `experiments`, `results`, `related_work`, `limitations`, `conclusion`. No markdown outside the JSON.
+**CRITICAL**: Return exactly **one JSON object** with a single key `"sections"` whose value is an object. Preserve all section keys from the input: `abstract`, `intro`, `background`, `method`, `experiments`, `results`, `related_work`, `limitations`, `conclusion`. Do not drop or rename any key. Start with `{`, end with `}`. No markdown outside the JSON.
+
+**DON'T**: Remove or change `[CITE:key]` / `[EVID:exp_N]` tags; add citation keys not in the input; shorten sections to placeholders. No markdown outside the JSON.

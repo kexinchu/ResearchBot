@@ -1,30 +1,46 @@
 #!/usr/bin/env bash
-# run.sh: 从 input.md 读取 research topic，启动 multi-agent 协作与探索
+# run.sh: Read research topic from input.md, start multi-agent pipeline.
+# Long-running task — use nohup or tmux:
+#   nohup ./run.sh input.md --browser > run.log 2>&1 &
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_FILE=""
 VENV_DIR="${SCRIPT_DIR}/venv"
-USE_LOCAL=""
 USE_BROWSER=""
+USE_THINKING=""
+SECTIONS_ARG=""
+FOCUS_ARG=""
+USE_RESUME=""
 
-# 解析可选参数
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --local)
-      USE_LOCAL="--local"
-      shift
-      ;;
     --browser)
       USE_BROWSER="--browser"
+      shift
+      ;;
+    --thinking)
+      USE_THINKING="1"
       shift
       ;;
     -i|--input)
       INPUT_FILE="$2"
       shift 2
       ;;
+    --sections)
+      SECTIONS_ARG="$2"
+      shift 2
+      ;;
+    --focus)
+      FOCUS_ARG="$2"
+      shift 2
+      ;;
+    --resume)
+      USE_RESUME=1
+      shift
+      ;;
     -*)
-      echo "未知选项: $1"
+      echo "Unknown option: $1"
       exit 1
       ;;
     *)
@@ -33,26 +49,27 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-# 未指定输入文件时使用仓库内 input.md（支持 bash run.sh --local）
+
 if [[ -z "$INPUT_FILE" ]]; then
   INPUT_FILE="${SCRIPT_DIR}/input.md"
 else
-  # 相对路径时基于当前目录解析
   [[ "$INPUT_FILE" != /* ]] && [[ -f "$INPUT_FILE" ]] && INPUT_FILE="$(cd "$(dirname "$INPUT_FILE")" && pwd)/$(basename "$INPUT_FILE")"
 fi
 
 if [[ ! -f "$INPUT_FILE" ]]; then
-  echo "错误: 输入文件不存在: $INPUT_FILE"
-  echo "用法: $0 [input.md] [--local]"
-  echo "      或: $0 --input input.md --local"
+  echo "Error: input file not found: $INPUT_FILE"
+  echo "Usage: $0 [input.md] [--browser] [--thinking] [--sections 'a,b,c']"
+  echo "       or: $0 --input input.md --browser"
   echo ""
-  echo "请创建 input.md 并填写要研究的 topic，例如："
+  echo "Create input.md with your research topic, e.g.:"
   echo "  Topic: OOD-aware graph-based ANNS for multimodal retrieval"
   echo "  Venue: Workshop, 4-6 pages, double-column"
+  echo "  (optional) Sections: experiments,results,conclusion"
+  echo "  (optional) Focus: system"
   exit 1
 fi
 
-# 从 input.md 解析 Topic / Venue（兼容多行与单行）
+# Parse Topic / Venue from input.md
 parse_field() {
   local key="$1"
   local file="$2"
@@ -79,7 +96,6 @@ parse_field() {
 
 TOPIC=$(parse_field "Topic" "$INPUT_FILE")
 if [[ -z "$TOPIC" ]]; then
-  # 回退：取第一个非空非标题行作为 topic
   TOPIC=$(grep -v '^[[:space:]]*#' "$INPUT_FILE" | grep -v '^[[:space:]]*$' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 fi
 VENUE=$(parse_field "Venue" "$INPUT_FILE")
@@ -87,51 +103,51 @@ if [[ -z "$VENUE" ]]; then
   VENUE="Workshop, 4-6 pages, double-column"
 fi
 CONSTRAINTS=$(parse_field "Constraints" "$INPUT_FILE")
+INPUT_SECTIONS=$(parse_field "Sections" "$INPUT_FILE")
+INPUT_THINKING=$(parse_field "Thinking" "$INPUT_FILE")
+INPUT_FOCUS=$(parse_field "Focus" "$INPUT_FILE")
+[[ -z "$SECTIONS_ARG" && -n "$INPUT_SECTIONS" ]] && SECTIONS_ARG="$INPUT_SECTIONS"
+[[ -z "$USE_THINKING" && -n "$INPUT_THINKING" ]] && USE_THINKING="$INPUT_THINKING"
+[[ -z "$FOCUS_ARG" && -n "$INPUT_FOCUS" ]] && FOCUS_ARG="$INPUT_FOCUS"
 
 if [[ -z "$TOPIC" ]]; then
-  echo "错误: 未在 $INPUT_FILE 中找到 Topic。请填写例如："
-  echo "  Topic: 你的研究主题"
+  echo "Error: no Topic found in $INPUT_FILE."
+  echo "  Topic: your research topic"
   exit 1
 fi
 
 echo "=============================================="
-echo "  EfficientResearch · Multi-Agent 协作"
+echo "  EfficientResearch - Multi-Agent Pipeline"
 echo "=============================================="
-echo "  输入文件: $INPUT_FILE"
+echo "  Input:    $INPUT_FILE"
 echo "  Topic:    $TOPIC"
 echo "  Venue:    $VENUE"
 [[ -n "$CONSTRAINTS" ]] && echo "  Constraints: $CONSTRAINTS"
-LOCAL_LABEL="否"
-[ -n "$USE_LOCAL" ] && LOCAL_LABEL="是 (--local)"
-[ -n "$USE_BROWSER" ] && LOCAL_LABEL="浏览器模式 (--browser)"
-echo "  本地模型: $LOCAL_LABEL"
+[[ -n "$SECTIONS_ARG" ]] && echo "  Sections: $SECTIONS_ARG"
+[[ -n "$FOCUS_ARG" ]] && echo "  Focus: $FOCUS_ARG"
+echo "  Human-in-the-loop: ON (default)"
+MODE_LABEL="API"
+[ -n "$USE_BROWSER" ] && MODE_LABEL="Browser (Playwright)"
+echo "  LLM mode: $MODE_LABEL"
+[ -n "$USE_THINKING" ] && echo "  Thinking: ON"
 echo "=============================================="
 
-# 激活虚拟环境（必须）
 if [[ ! -d "$VENV_DIR" ]]; then
-  echo "错误: 未找到虚拟环境 $VENV_DIR"
-  echo "请先执行: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+  echo "Error: venv not found at $VENV_DIR"
+  echo "Run: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
   exit 1
 fi
 source "${VENV_DIR}/bin/activate"
 
-# --local 时预检本地 LLM 是否可达
-if [[ -n "$USE_LOCAL" ]]; then
-  LLM_URL="${OPENAI_BASE_URL:-http://127.0.0.1:8000/v1}"
-  BASE="${LLM_URL%/v1*}"
-  if ! curl -sf -o /dev/null --connect-timeout 3 "${BASE}/health" 2>/dev/null && ! curl -sf -o /dev/null --connect-timeout 3 "${BASE}/v1/models" 2>/dev/null; then
-    echo "错误: 本地 LLM 服务未就绪 (无法连接 ${BASE})。"
-    echo "请先启动 vLLM，例如: ./env_prepare.sh 或 在另一终端运行 vllm serve <model_path> --port 8000"
-    exit 1
-  fi
-fi
-
 cd "$SCRIPT_DIR"
+[[ -n "$USE_THINKING" ]] && export EFFICIENT_RESEARCH_BROWSER_THINKING=1
 CMD=(python3 -m orchestrator.pipeline --topic "$TOPIC" --venue "$VENUE")
 [[ -n "$CONSTRAINTS" ]] && CMD+=(--constraints "$CONSTRAINTS")
-[[ -n "$USE_LOCAL" ]] && CMD+=(--local)
 [[ -n "$USE_BROWSER" ]] && CMD+=(--browser)
+[[ -n "$SECTIONS_ARG" ]] && CMD+=(--sections "$SECTIONS_ARG")
+[[ -n "$FOCUS_ARG" ]] && CMD+=(--focus "$FOCUS_ARG")
+[[ -n "$USE_RESUME" ]] && CMD+=(--resume)
 "${CMD[@]}"
 
 echo ""
-echo "完成。可在 artifacts/paper/ 查看 LaTeX 稿, artifacts/runs/ 查看各阶段结果。"
+echo "Done. Check artifacts/paper/ for LaTeX, artifacts/runs/ for stage results."

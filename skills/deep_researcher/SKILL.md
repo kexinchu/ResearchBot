@@ -40,6 +40,10 @@ One short paragraph: what is missing or underexplored in the literature that the
 
 ## Output format (strict JSON)
 
+**CRITICAL**: Return exactly **one JSON object** with keys: `annotated_bib`, `related_work_draft`, `baseline_checklist`, `metrics_checklist`, `gap_summary`. Do NOT return an array or markdown. Start with `{`, end with `}`.
+
+**DON'T**: Invent papers — every annotated_bib entry must come from the provided inputs. Every key in annotated_bib must be a valid BibTeX-style key (e.g. `smith2023method`). No markdown outside the JSON.
+
 ```json
 {
   "annotated_bib": [
@@ -61,4 +65,4 @@ One short paragraph: what is missing or underexplored in the literature that the
 }
 ```
 
-No other top-level keys. No markdown outside the JSON.
+All five top-level keys must be present. `baseline_checklist` and `metrics_checklist` must be arrays of strings (at least 1 baseline). No other keys. No markdown outside the JSON.

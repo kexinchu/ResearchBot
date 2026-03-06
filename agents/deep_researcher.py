@@ -87,7 +87,7 @@ def run(input_data: dict) -> dict:
     )
 
     from tools.llm import call_llm
-    raw = call_llm(system, user, json_mode=True, max_tokens=3072)
+    raw = call_llm(system, user, json_mode=True, max_tokens=4096)
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:

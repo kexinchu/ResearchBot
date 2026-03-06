@@ -42,8 +42,14 @@ def run(input_data: dict) -> dict:
         out = json.loads(raw)
     except json.JSONDecodeError:
         out = {}
+    # LLM may return a list (e.g. [exp1, exp2]) instead of {experiment_plan: [...]}
+    if isinstance(out, list):
+        out = {"experiment_plan": out, "theoretical_validation": [], "code_snippets": {}, "result_tables": [], "result_summary": ""}
+    if not isinstance(out, dict):
+        out = {}
     return {
         "experiment_plan": out.get("experiment_plan") or [],
+        "theoretical_validation": out.get("theoretical_validation") or [],
         "code_snippets": out.get("code_snippets") or {},
         "result_tables": out.get("result_tables") or [],
         "result_summary": out.get("result_summary") or "",

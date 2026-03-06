@@ -188,6 +188,37 @@ def _search_semantic_scholar(query: str, max_results: int = 5) -> List[Dict[str,
 
 
 # ──────────────────────────────────────────────
+# Deduplication
+# ──────────────────────────────────────────────
+
+def _normalize_title(title: str) -> str:
+    """Lowercase, strip punctuation/whitespace for fuzzy title matching."""
+    return re.sub(r"[^\w\s]", "", title.lower()).strip()
+
+
+def _deduplicate(results: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Deduplicate by URL and fuzzy title match."""
+    seen_urls: set = set()
+    seen_titles: set = set()
+    out: List[Dict[str, str]] = []
+    for r in results:
+        url = (r.get("url") or "").strip()
+        title = r.get("title") or ""
+        norm_title = _normalize_title(title)
+        # Skip if we've seen the same URL or a very similar title
+        if url and url in seen_urls:
+            continue
+        if norm_title and len(norm_title) > 10 and norm_title in seen_titles:
+            continue
+        if url:
+            seen_urls.add(url)
+        if norm_title:
+            seen_titles.add(norm_title)
+        out.append(r)
+    return out
+
+
+# ──────────────────────────────────────────────
 # Unified search interface
 # ──────────────────────────────────────────────
 
@@ -217,19 +248,21 @@ def search(
 
     if source == "all":
         per = max(2, max_results // 3)
-        combined = (
-            _search_arxiv(query, max_results=per)
-            + _search_semantic_scholar(query, max_results=per)
-            + _search_web(query, max_results=per)
-        )
-        seen: set = set()
-        out: List[Dict[str, str]] = []
-        for r in combined:
-            key = r.get("url") or r.get("title") or ""
-            if key and key not in seen:
-                seen.add(key)
-                out.append(r)
-        return out[:max_results]
+        # Run all three sources in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        combined: List[Dict[str, str]] = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(_search_arxiv, query, per),
+                executor.submit(_search_semantic_scholar, query, per),
+                executor.submit(_search_web, query, per),
+            ]
+            for f in as_completed(futures):
+                try:
+                    combined.extend(f.result())
+                except Exception:
+                    pass
+        return _deduplicate(combined)[:max_results]
 
     # source="auto": academic-first, fallback to web
     academic = _search_arxiv(query, max_results=max_results)

@@ -33,14 +33,19 @@ Be adversarial. List the strongest objections first.
 
 ## Output format (strict JSON)
 
+**CRITICAL**: Return exactly **one JSON object** with these five keys (no array, no markdown): `contribution_statement`, `novelty_verdict`, `rejection_risks`, `required_experiments`, `threats_to_validity`. Start with `{`, end with `}`.
+
+- **novelty_verdict**: MUST be exactly one of the strings `"clear"`, `"unclear"`, `"missing"` (no other value).
+- **rejection_risks** / **required_experiments** / **threats_to_validity**: arrays of strings; be concrete, reference `[CITE:key]` where applicable.
+
 ```json
 {
   "contribution_statement": "<refined 1-2 sentence contribution>",
-  "novelty_verdict": "clear|unclear|missing",
+  "novelty_verdict": "clear",
   "rejection_risks": ["<concrete reason with bib key where applicable>", "..."],
   "required_experiments": ["<concrete: what vs. what, on what metric/dataset>", "..."],
   "threats_to_validity": ["<threat 1>", "..."]
 }
 ```
 
-No markdown outside the JSON.
+**DON'T**: Use novelty_verdict other than "clear"|"unclear"|"missing"; return vague rejection_risks. No markdown outside the JSON.

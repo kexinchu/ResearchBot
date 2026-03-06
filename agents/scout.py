@@ -15,6 +15,7 @@ def run(input_data: dict) -> dict:
     """
     hypotheses = input_data.get("hypotheses", [])
     topic = input_data.get("topic", "")
+    preferred_focus = (input_data.get("preferred_focus") or "").strip().lower()
     system = _load_prompt()
 
     # Explorer：必须访问网络，查询论文/blog
@@ -49,8 +50,16 @@ def run(input_data: dict) -> dict:
         f"Topic: {topic}\n\n"
         f"Web search results (use these to build related_work and scores):\n{search_block}\n\n"
         f"Hypotheses (JSON):\n{json.dumps(hypotheses, indent=2)}\n\n"
-        "Output valid JSON only."
     )
+    if preferred_focus == "system":
+        user += (
+            "Selection bias: The user prefers SYSTEM-oriented research. When choosing selected_ids (1–2 hypotheses), "
+            "prefer hypotheses that concern system design, architecture, algorithms, or performance (latency, throughput, scalability). "
+            "Favor feasibility for building or evaluating a system.\n\n"
+        )
+    elif preferred_focus in ("theory", "empirical", "analysis"):
+        user += f"Selection bias: Prefer hypotheses that best match contribution type '{preferred_focus}' when scoring and selecting.\n\n"
+    user += "Output valid JSON only."
     from tools.llm import call_llm
     raw = call_llm(system, user, json_mode=True)
     try:

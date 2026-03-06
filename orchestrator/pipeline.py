@@ -1,45 +1,52 @@
 """
-EfficientResearch – iterative multi-agent pipeline.
+EfficientResearch – iterative multi-agent pipeline with human-in-the-loop.
+
+Human intervention is the default at every major stage:
+  - Results are written to editable Markdown files
+  - User edits the Markdown, then confirms
+  - Edited content is read back as stage output for the next round
 
 Flow:
-  Phase 1 · Explore   : Ideator → Scout → DeepResearcher
+  Phase 1 · Explore   : Ideator → Scout → DeepResearcher (human review loop)
   Phase 2 · Review    : Skeptic ⟲ DeepResearcher  (up to MAX_REVIEW_ITER)
-  Phase 3 · Experiment: Experimenter
-  Phase 4 · Write     : Writer ⟲ [DeepResearcher | Experimenter]  (up to MAX_WRITE_ITER)
+  Phase 3 · Experiment: Experimenter (human review loop)
+  Phase 4 · Write     : Writer (human review loop) ⟲ gates
   Phase 5 · Edit      : Editor
-  Phase 6 · PeerReview: Reviewer[MLSys|VLDB|NeurIPS|AAAI] ⟲ Writer  (up to MAX_PEER_REVIEW_ITER)
-
-Loops trigger when:
-  - Skeptic finds evidence gaps  → re-run DeepResearcher with targeted queries, then re-Skeptic
-  - Writer gate fails on baselines/citations → re-run DeepResearcher (+Skeptic)
-  - Writer gate fails on EVID coverage      → re-run Experimenter
-  - Writer gate fails on speculation/text   → re-run Writer with fix_list only
+  Phase 6 · PeerReview: Reviewer ⟲ Writer  (up to MAX_PEER_REVIEW_ITER)
 """
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from orchestrator.state import create_initial_state, get_selected_hypotheses
-from tools.io import ensure_artifacts_dirs, save_json
+from orchestrator.human_review import (
+    ensure_review_dir,
+    write_ideator_report, prompt_hypothesis_selection,
+    write_deep_research_report, read_deep_research_md,
+    write_experimenter_report, read_experimenter_md,
+    write_writer_report, read_writer_md,
+    prompt_edit_and_confirm,
+)
+from tools.io import ensure_artifacts_dirs, load_state_from_runs, save_json
 from tools.latex_builder import build_latex, inject_result_tables, compile_pdf
 from tools.citations import save_citations_to_bib
 
 # ── tuneable caps ─────────────────────────────────────────────
-MAX_REVIEW_ITER      = 2   # Skeptic ↔ DeepResearcher loops
-MAX_WRITE_ITER       = 3   # Writer revision loops
-MAX_PEER_REVIEW_ITER = 3   # Reviewer ↔ Writer loops
-SKEPTIC_RISK_THRESHOLD = 3  # min evidence-related risks that trigger re-research
-REVIEWER_PASS_SCORE  = 4   # overall score threshold for acceptance (per venue)
+MAX_REVIEW_ITER      = 2
+MAX_WRITE_ITER       = 3
+MAX_PEER_REVIEW_ITER = 3
+SKEPTIC_RISK_THRESHOLD = 3
+REVIEWER_PASS_SCORE  = 4
 
 
 # ══════════════════════════════════════════════════════════════
-# Stage functions  (each updates `state` in-place and saves JSON)
+# Stage functions
 # ══════════════════════════════════════════════════════════════
 
 def _log(msg: str) -> None:
@@ -47,43 +54,51 @@ def _log(msg: str) -> None:
 
 
 def _stage_ideator(state: dict, dirs: dict, topic: str, venue: str, constraints: str) -> None:
-    _log("Phase 1 · Explore · Ideator …")
+    _log("Phase 1 · Explore · Ideator ...")
     from agents.ideator import run as ideator_run
-    out = ideator_run({"topic": topic, "venue": venue, "constraints": constraints})
+    ideator_input = {"topic": topic, "venue": venue, "constraints": constraints}
+    if state.get("retrieved_memory"):
+        ideator_input["retrieved_memory"] = state["retrieved_memory"]
+    if state.get("preferred_focus"):
+        ideator_input["preferred_focus"] = state["preferred_focus"]
+    out = ideator_run(ideator_input)
     state["hypotheses"] = out.get("hypotheses") or []
     if not state["hypotheses"]:
-        _log("  Ideator returned no hypotheses – retrying with explicit fix_list …")
+        _log("  Ideator returned no hypotheses - retrying ...")
         out = ideator_run({
             "topic": topic, "venue": venue, "constraints": constraints,
             "fix_list": ["You MUST output at least 3 hypotheses. Empty list is invalid."],
         })
         state["hypotheses"] = out.get("hypotheses") or []
-    # Propagate new fields to state
+    state["related_work_summary"] = out.get("related_work_summary") or ""
+    state["unsolved_problems"] = out.get("unsolved_problems") or []
+    state["research_worthy"] = out.get("research_worthy") or []
+    state["proposals"] = out.get("proposals") or []
     state["paper_title"] = out.get("paper_title") or f"Research on {topic}"
     state["contribution_statement"] = out.get("contribution_statement") or ""
     state["contribution_type"] = out.get("contribution_type") or "empirical"
     save_json(state, dirs["runs"] / "01_ideator.json")
-    _log(f"  → {len(state['hypotheses'])} hypotheses generated. Title: {state['paper_title']!r}")
+    _log(f"  -> {len(state['hypotheses'])} hypotheses, title: {state['paper_title']!r}")
 
 
-def _stage_scout(state: dict, dirs: dict, topic: str) -> None:
-    _log("Phase 1 · Explore · Scout …")
+def _stage_scout(state: dict, dirs: dict, topic: str, preferred_focus: Optional[str] = None) -> None:
+    _log("Phase 1 · Explore · Scout ...")
     from agents.scout import run as scout_run
-    state["scout_output"] = scout_run({"topic": topic, "hypotheses": state["hypotheses"]})
+    scout_input = {"topic": topic, "hypotheses": state["hypotheses"]}
+    if preferred_focus:
+        scout_input["preferred_focus"] = preferred_focus
+    state["scout_output"] = scout_run(scout_input)
     save_json(state, dirs["runs"] / "02_scout.json")
     selected_ids = (state["scout_output"] or {}).get("selected_ids") or []
-    _log(f"  → selected hypotheses: {selected_ids}")
+    _log(f"  -> selected hypotheses: {selected_ids}")
 
 
 def _stage_deep_researcher(
-    state: dict,
-    dirs: dict,
-    selected: list,
-    iteration: int = 1,
-    extra_queries: Optional[List[str]] = None,
+    state: dict, dirs: dict, selected: list,
+    iteration: int = 1, extra_queries: Optional[List[str]] = None,
 ) -> None:
     label = f"iter{iteration}" if iteration > 1 else ""
-    _log(f"Phase 1 · Explore · DeepResearcher {label} …")
+    _log(f"Phase 1 · Explore · DeepResearcher {label} ...")
     from agents.deep_researcher import run as deep_run
     state["deep_research_output"] = deep_run({
         "hypotheses": selected,
@@ -94,17 +109,13 @@ def _stage_deep_researcher(
     suffix = f"_iter{iteration}" if iteration > 1 else ""
     save_json(state, dirs["runs"] / f"03_deep_research{suffix}.json")
     bib_count = len((state["deep_research_output"] or {}).get("annotated_bib") or [])
-    _log(f"  → {bib_count} annotated bib entries.")
+    _log(f"  -> {bib_count} annotated bib entries.")
 
 
 def _stage_skeptic(
-    state: dict,
-    dirs: dict,
-    selected: list,
-    approach: str,
-    iteration: int = 1,
+    state: dict, dirs: dict, selected: list, approach: str, iteration: int = 1,
 ) -> None:
-    _log(f"Phase 2 · Review · Skeptic (iter {iteration}) …")
+    _log(f"Phase 2 · Review · Skeptic (iter {iteration}) ...")
     from agents.skeptic import run as skeptic_run
     state["skeptic_output"] = skeptic_run({
         "approach_summary": approach,
@@ -113,7 +124,6 @@ def _stage_skeptic(
         "contribution_statement": state.get("contribution_statement") or "",
     })
     state["skeptic_iteration"] = iteration
-    # Skeptic refines the contribution_statement — update state if it produces one
     refined_cs = (state["skeptic_output"] or {}).get("contribution_statement")
     if refined_cs:
         state["contribution_statement"] = refined_cs
@@ -121,12 +131,12 @@ def _stage_skeptic(
     save_json(state, dirs["runs"] / f"04_skeptic{suffix}.json")
     risks = (state["skeptic_output"] or {}).get("rejection_risks") or []
     verdict = (state["skeptic_output"] or {}).get("novelty_verdict", "?")
-    _log(f"  → novelty={verdict}, {len(risks)} rejection risk(s).")
+    _log(f"  -> novelty={verdict}, {len(risks)} rejection risk(s).")
 
 
 def _stage_experimenter(state: dict, dirs: dict, selected: list, iteration: int = 1) -> None:
     label = f"(iter {iteration})" if iteration > 1 else ""
-    _log(f"Phase 3 · Experiment · Experimenter {label} …")
+    _log(f"Phase 3 · Experiment · Experimenter {label} ...")
     from agents.experimenter import run as experimenter_run
     state["experimenter_output"] = experimenter_run({
         "hypotheses": selected,
@@ -138,20 +148,20 @@ def _stage_experimenter(state: dict, dirs: dict, selected: list, iteration: int 
     suffix = f"_iter{iteration}" if iteration > 1 else ""
     save_json(state, dirs["runs"] / f"05_experimenter{suffix}.json")
     plans = (state["experimenter_output"] or {}).get("experiment_plan") or []
-    _log(f"  → {len(plans)} experiment(s) designed.")
+    _log(f"  -> {len(plans)} experiment(s) designed.")
 
 
 def _stage_writer(
-    state: dict,
-    dirs: dict,
-    topic: str,
-    venue: str,
-    selected: list,
-    approach: str,
-    iteration: int = 1,
+    state: dict, dirs: dict, topic: str, venue: str,
+    selected: list, approach: str, iteration: int = 1,
+    sections_to_write: Optional[List[str]] = None,
+    existing_sections: Optional[dict] = None,
 ) -> None:
     label = f"(iter {iteration})" if iteration > 1 else ""
-    _log(f"Phase 4 · Write · Writer {label} …")
+    if sections_to_write:
+        _log(f"Phase 4 · Write · Writer {label} (sections: {', '.join(sections_to_write)}) ...")
+    else:
+        _log(f"Phase 4 · Write · Writer {label} ...")
     from agents.writer import run as writer_run
     dr = state["deep_research_output"] or {}
     writer_input = {
@@ -168,14 +178,18 @@ def _stage_writer(
         "experiment_output": state["experimenter_output"],
         "fix_list": state.get("fix_list") or [],
     }
+    if sections_to_write:
+        writer_input["sections_to_write"] = sections_to_write
+    if existing_sections:
+        writer_input["existing_sections"] = existing_sections
     state["writer_output"] = writer_run(writer_input)
     # retry if almost empty
     sections_raw = (state["writer_output"] or {}).get("sections") or {}
     if sum(len(str(v)) for v in sections_raw.values()) < 200:
-        _log("  Writer returned near-empty sections – retrying …")
+        _log("  Writer returned near-empty sections - retrying ...")
         writer_input["fix_list"] = [
             "Previous run returned empty or nearly empty sections. "
-            "You MUST write at least 2-4 substantive sentences per section; empty strings are invalid."
+            "You MUST write at least 2-4 substantive sentences per section."
         ]
         state["writer_output"] = writer_run(writer_input)
     suffix = f"_iter{iteration}" if iteration > 1 else ""
@@ -202,7 +216,6 @@ def _build_latex_artifacts(state: dict, dirs: dict, sections: dict = None) -> No
 # ══════════════════════════════════════════════════════════════
 
 def _skeptic_needs_more_evidence(skeptic_output: dict, threshold: int = SKEPTIC_RISK_THRESHOLD) -> bool:
-    """Return True if Skeptic identified enough evidence-gap risks to warrant a re-research pass."""
     risks = skeptic_output.get("rejection_risks") or []
     evidence_keywords = ["missing", "no evidence", "lack", "not compared", "baseline", "no comparison", "without"]
     evidence_gaps = sum(1 for r in risks if any(k in r.lower() for k in evidence_keywords))
@@ -210,45 +223,53 @@ def _skeptic_needs_more_evidence(skeptic_output: dict, threshold: int = SKEPTIC_
 
 
 def _classify_reviewer_feedback(reviews: List[dict]) -> Tuple[bool, bool]:
-    """
-    Analyse reviewer required_revisions to route revision work.
-    Returns (needs_more_research, needs_more_experiments).
-    Writer is always re-run in the peer-review loop.
-    """
     all_revisions = " ".join(
         rev for r in reviews for rev in (r.get("required_revisions") or [])
     ).lower()
-    needs_more_research    = any(k in all_revisions for k in ["baseline", "literature", "related work", "missing citation", "comparison"])
+    needs_more_research = any(k in all_revisions for k in ["baseline", "literature", "related work", "missing citation", "comparison"])
     needs_more_experiments = any(k in all_revisions for k in ["experiment", "ablation", "evaluation", "dataset", "result"])
     return needs_more_research, needs_more_experiments
 
 
 def _classify_gate_failures(gate_reasons: List[str]) -> Tuple[bool, bool, bool]:
-    """
-    Returns (needs_research, needs_experiments, needs_rewrite).
-    - needs_research   : baseline / citation coverage issues → re-run DeepResearcher (+Skeptic)
-    - needs_experiments: [EVID:] coverage gap in results/experiments → re-run Experimenter
-    - needs_rewrite    : missing tags / speculation / skeptic_items → re-run Writer with fix_list
-    """
     joined = " ".join(gate_reasons).lower()
-    # "no [cite:" or "no [evid:" → Writer didn't use tags at all → rewrite with explicit instructions
     missing_tags = "no [cite:" in joined or "no [evid:" in joined or "no [spec]" in joined
-    needs_research    = ("baseline" in joined or "citation_coverage" in joined) and not missing_tags
-    # Only trigger Experimenter re-run when EVID *coverage* is low (not when tags are entirely absent)
+    needs_research = ("baseline" in joined or "citation_coverage" in joined) and not missing_tags
     needs_experiments = ("evid" in joined or "experiment" in joined) and not missing_tags
-    needs_rewrite     = "speculation" in joined or "skeptic_items" in joined or missing_tags
+    needs_rewrite = "speculation" in joined or "skeptic_items" in joined or missing_tags
     return needs_research, needs_experiments, needs_rewrite
 
 
 # ══════════════════════════════════════════════════════════════
-# Main pipeline
+# Main pipeline (human-in-the-loop is always on)
 # ══════════════════════════════════════════════════════════════
+
+def _detect_resume_stage(runs_dir) -> Optional[str]:
+    from pathlib import Path
+    runs = Path(runs_dir)
+    stage_order = [
+        ("07_editor",        "peer_review"),
+        ("06_writer",        "editor"),
+        ("05_experimenter",  "writer"),
+        ("04_skeptic",       "experimenter"),
+        ("03_deep_research", "skeptic"),
+        ("02_scout",         "deep_researcher"),
+        ("01_ideator",       "scout"),
+    ]
+    for prefix, next_stage in stage_order:
+        if list(runs.glob(prefix + "*.json")):
+            return next_stage
+    return None
+
 
 def run_pipeline(
     topic: str,
     venue: str,
     artifacts_root: Optional[str] = None,
     constraints: Optional[str] = None,
+    sections: Optional[List[str]] = None,
+    focus: Optional[str] = None,
+    resume: bool = False,
 ) -> dict:
     if artifacts_root is None:
         artifacts_root = str(_REPO_ROOT / "artifacts")
@@ -256,52 +277,203 @@ def run_pipeline(
         constraints = venue
     dirs = ensure_artifacts_dirs(artifacts_root)
     state = create_initial_state(topic, venue, artifacts_root)
-    state["loop_log"] = []   # track every loop event for transparency
+    state["loop_log"] = []
+    review_dir = ensure_review_dir(artifacts_root)
 
-    # ── Phase 1: Explore ─────────────────────────────────────
-    _stage_ideator(state, dirs, topic, venue, constraints)
-    _stage_scout(state, dirs, topic)
+    # ── Resume ──
+    resume_from = None
+    if resume:
+        resume_from = _detect_resume_stage(dirs["runs"])
+        if resume_from:
+            loaded = load_state_from_runs(dirs["runs"])
+            if loaded:
+                state.update(loaded)
+                state["topic"] = topic
+                state["venue"] = venue
+                state["loop_log"] = state.get("loop_log") or []
+                _log(f"Resuming from stage: {resume_from}")
+            else:
+                _log("Resume requested but could not load prior state. Starting fresh.")
+                resume_from = None
+        else:
+            _log("Resume requested but no prior run found. Starting fresh.")
+    if focus:
+        state["preferred_focus"] = focus.strip().lower()
+        _log(f"Focus: {state['preferred_focus']}")
+
+    # RAG memory
+    try:
+        from tools.rag import query, format_retrieved_for_prompt
+        hits = query(topic, k=5, artifacts_root=artifacts_root)
+        if hits:
+            state["retrieved_memory"] = format_retrieved_for_prompt(hits, max_chars=2500)
+            _log(f"RAG: injected {len(hits)} memory fragments.")
+    except Exception:
+        state["retrieved_memory"] = ""
+
+    import config
+    if getattr(config, "USE_BROWSER_LLM", False):
+        from tools import browser_llm
+        browser_llm.start_browser_session()
+
+    # ── Partial run: only regenerate given sections ──
+    if sections:
+        loaded = load_state_from_runs(dirs["runs"])
+        if not loaded:
+            _log("Cannot run partial: no prior run found. Run full pipeline first.")
+            return state
+        state.update(loaded)
+        state["topic"] = topic
+        state["venue"] = venue
+        state["loop_log"] = state.get("loop_log") or []
+        _log(f"Partial run: only sections {sections}.")
+        existing_sections = (state.get("writer_output") or {}).get("sections") or {}
+        selected = get_selected_hypotheses(state)
+        approach = "Selected hypotheses: " + json.dumps([h.get("claim") for h in selected], indent=2)
+        _stage_writer(state, dirs, topic, venue, selected, approach, iteration=1,
+                      sections_to_write=sections, existing_sections=existing_sections)
+        save_json(state, dirs["runs"] / "06_writer_partial.json")
+        _build_latex_artifacts(state, dirs)
+        _log("Phase 5 · Edit · Editor ...")
+        from agents.editor import run as editor_run
+        sections_dict = (state["writer_output"] or {}).get("sections") or {}
+        state["editor_output"] = editor_run({
+            "sections": sections_dict,
+            "contribution_statement": state.get("contribution_statement") or "",
+            "paper_title": state.get("paper_title") or "",
+        })
+        save_json(state, dirs["runs"] / "07_editor.json")
+        final_sections = (state["editor_output"] or {}).get("sections") or sections_dict
+        _build_latex_artifacts(state, dirs, sections=final_sections)
+        _log("Compiling PDF ...")
+        compile_pdf(dirs["paper"])
+        _log("Done (partial).")
+        return state
+
+    # ── Resume skip helper ──
+    _STAGE_ORDER = ["ideator", "scout", "deep_researcher", "skeptic", "experimenter", "writer", "editor", "peer_review"]
+    def _should_skip(stage_name: str) -> bool:
+        if not resume_from:
+            return False
+        return _STAGE_ORDER.index(stage_name) < _STAGE_ORDER.index(resume_from)
+
+    # ══════════════════════════════════════════════════════════
+    # Phase 1: Explore
+    # ══════════════════════════════════════════════════════════
+    if _should_skip("ideator"):
+        _log("Phase 1 · Ideator ... (skipped, loaded from checkpoint)")
+    else:
+        _stage_ideator(state, dirs, topic, venue, constraints)
+
+    # Human: write ideator report, let user select hypotheses
+    write_ideator_report(state, review_dir)
+    _log(f"  Ideator report: {review_dir / '01_ideator.md'}")
+    selected_ids = prompt_hypothesis_selection(state)
+    if selected_ids:
+        state["scout_output"] = (state.get("scout_output") or {}) | {"selected_ids": selected_ids}
+        _log(f"  Human selected: {selected_ids}")
+
+    # Still run Scout for related_work if needed
+    if not (state.get("scout_output") or {}).get("related_work"):
+        if _should_skip("scout"):
+            _log("Phase 1 · Scout ... (skipped, loaded from checkpoint)")
+        else:
+            _stage_scout(state, dirs, topic, state.get("preferred_focus") or None)
+            state["scout_output"] = (state["scout_output"] or {}) | {"selected_ids": selected_ids}
+
     selected = get_selected_hypotheses(state)
-    _stage_deep_researcher(state, dirs, selected, iteration=1)
+    if not selected and state.get("hypotheses"):
+        selected = state["hypotheses"][:2]
+        state["scout_output"] = (state.get("scout_output") or {}) | {
+            "selected_ids": [(state["hypotheses"][i].get("id") or f"H{i+1}") for i in range(min(2, len(state["hypotheses"])))]
+        }
+        selected = get_selected_hypotheses(state)
 
-    # ── Phase 2: Review loop ──────────────────────────────────
+    # ── DeepResearch: human review loop ──
+    if _should_skip("deep_researcher"):
+        _log("Phase 1 · DeepResearcher ... (skipped, loaded from checkpoint)")
+    else:
+        deep_round = 1
+        while True:
+            _stage_deep_researcher(state, dirs, selected, iteration=deep_round)
+            md_path = write_deep_research_report(state, review_dir, deep_round)
+            _log(f"  DeepResearch round {deep_round}: {md_path}")
+            choice = prompt_edit_and_confirm("DeepResearch", md_path, round_n=deep_round)
+            if choice == "next":
+                # Read back any human edits before proceeding
+                edited = read_deep_research_md(review_dir, deep_round)
+                if edited:
+                    state["deep_research_output"] = edited
+                    _log("  Read back human edits from DeepResearch MD.")
+                break
+            # Read back edits for next round
+            edited = read_deep_research_md(review_dir, deep_round)
+            if edited:
+                state["deep_research_output"] = edited
+                _log("  Read back human edits from DeepResearch MD.")
+            deep_round += 1
+
+    # ══════════════════════════════════════════════════════════
+    # Phase 2: Skeptic review loop
+    # ══════════════════════════════════════════════════════════
     approach = "Selected hypotheses: " + json.dumps(
         [h.get("claim") for h in selected], indent=2
     )
-    for review_iter in range(1, MAX_REVIEW_ITER + 1):
-        _stage_skeptic(state, dirs, selected, approach, iteration=review_iter)
+    if _should_skip("skeptic"):
+        _log("Phase 2 · Skeptic ... (skipped, loaded from checkpoint)")
+    else:
+        for review_iter in range(1, MAX_REVIEW_ITER + 1):
+            _stage_skeptic(state, dirs, selected, approach, iteration=review_iter)
 
-        novelty_verdict = (state["skeptic_output"] or {}).get("novelty_verdict", "unclear")
+            novelty_verdict = (state["skeptic_output"] or {}).get("novelty_verdict", "unclear")
+            if novelty_verdict == "missing":
+                event = f"review_iter={review_iter}: Skeptic novelty_verdict=MISSING"
+                _log(f"  ! {event}")
+                state["loop_log"].append(event)
+                state["fix_list"] = (state.get("fix_list") or []) + [
+                    "CRITICAL: Skeptic could not identify a clear novelty gap. "
+                    "In the intro and method sections, explicitly state what prior work CANNOT do "
+                    "and why your approach fills this specific gap."
+                ]
 
-        if novelty_verdict == "missing":
-            # Novelty gap is absent — log it prominently and add to Writer fix_list
-            event = (
-                f"review_iter={review_iter}: Skeptic novelty_verdict=MISSING – "
-                "contribution gap not found in literature. Adding explicit fix guidance for Writer."
-            )
-            _log(f"  ⚠  {event}")
-            state["loop_log"].append(event)
-            state["fix_list"] = (state.get("fix_list") or []) + [
-                "CRITICAL: Skeptic could not identify a clear novelty gap. "
-                "In the intro and method sections, you MUST explicitly state what prior work CANNOT do "
-                "and why your approach fills this specific gap. Cite specific papers from annotated_bib by key."
-            ]
+            if review_iter < MAX_REVIEW_ITER and _skeptic_needs_more_evidence(state["skeptic_output"]):
+                extra_queries = (state["skeptic_output"] or {}).get("rejection_risks") or []
+                event = f"review_iter={review_iter}: Skeptic found evidence gaps - re-running DeepResearcher."
+                _log(f"  <- {event}")
+                state["loop_log"].append(event)
+                _stage_deep_researcher(state, dirs, selected, iteration=review_iter + 1, extra_queries=extra_queries)
+            else:
+                if review_iter > 1:
+                    _log(f"  OK Review loop converged after {review_iter} iteration(s).")
+                break
 
-        if review_iter < MAX_REVIEW_ITER and _skeptic_needs_more_evidence(state["skeptic_output"]):
-            extra_queries = (state["skeptic_output"] or {}).get("rejection_risks") or []
-            event = f"review_iter={review_iter}: Skeptic found evidence gaps – re-running DeepResearcher with {len(extra_queries)} extra queries."
-            _log(f"  ↩  {event}")
-            state["loop_log"].append(event)
-            _stage_deep_researcher(state, dirs, selected, iteration=review_iter + 1, extra_queries=extra_queries)
-        else:
-            if review_iter > 1:
-                _log(f"  ✓ Review loop converged after {review_iter} iteration(s). novelty={novelty_verdict}")
-            break
+    # ══════════════════════════════════════════════════════════
+    # Phase 3: Experimenter (human review loop)
+    # ══════════════════════════════════════════════════════════
+    if _should_skip("experimenter"):
+        _log("Phase 3 · Experiment ... (skipped, loaded from checkpoint)")
+    else:
+        exp_iter = 1
+        while True:
+            _stage_experimenter(state, dirs, selected, iteration=exp_iter)
+            md_path = write_experimenter_report(state, review_dir)
+            _log(f"  Experimenter report: {md_path}")
+            choice = prompt_edit_and_confirm("Experimenter", md_path)
+            if choice == "next":
+                edited = read_experimenter_md(review_dir)
+                if edited:
+                    state["experimenter_output"] = edited
+                    _log("  Read back human edits from Experimenter MD.")
+                break
+            edited = read_experimenter_md(review_dir)
+            if edited:
+                state["experimenter_output"] = edited
+                _log("  Read back human edits from Experimenter MD.")
+            exp_iter += 1
 
-    # ── Phase 3: Experiment ───────────────────────────────────
-    _stage_experimenter(state, dirs, selected, iteration=1)
-
-    # ── Phase 4: Write loop ───────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    # Phase 4: Writer (human review loop + gates)
+    # ══════════════════════════════════════════════════════════
     from eval.gates import run_gates
     state["gate_results"] = state.get("gate_results") or {}
 
@@ -311,54 +483,68 @@ def run_pipeline(
         gate_ok, gate_reasons = run_gates("writer", state)
         state["gate_results"][f"writer_iter{write_iter}"] = {"pass": gate_ok, "reasons": gate_reasons}
 
-        if gate_ok or write_iter == MAX_WRITE_ITER:
-            if gate_ok:
-                _log(f"  ✓ Writer gates passed on iteration {write_iter}.")
-            else:
-                _log(f"  ⚠  Writer gates still failing after {write_iter} iteration(s) – proceeding anyway.")
+        # Human review: write MD, let user edit, read back
+        md_path = write_writer_report(state, review_dir)
+        _log(f"  Writer report: {md_path}")
+        if gate_ok:
+            _log(f"  OK Writer gates passed on iteration {write_iter}.")
+        else:
+            _log(f"  ! Writer gates failed: {gate_reasons}")
+
+        choice = prompt_edit_and_confirm("Writer", md_path)
+        if choice == "next":
+            # Read back human edits
+            edited_sections = read_writer_md(review_dir)
+            if edited_sections:
+                state["writer_output"] = (state.get("writer_output") or {}) | {"sections": edited_sections}
+                _log("  Read back human edits from Writer MD.")
             break
 
-        # Classify failures and route to the right upstream stage
+        # Read back edits for next iteration
+        edited_sections = read_writer_md(review_dir)
+        if edited_sections:
+            state["writer_output"] = (state.get("writer_output") or {}) | {"sections": edited_sections}
+            _log("  Read back human edits from Writer MD.")
+
+        if gate_ok or write_iter == MAX_WRITE_ITER:
+            if not gate_ok:
+                _log(f"  ! Writer gates still failing after {write_iter} iteration(s) - proceeding.")
+            break
+
+        # Classify failures and route
         needs_research, needs_experiments, needs_rewrite = _classify_gate_failures(gate_reasons)
-        event = (
-            f"write_iter={write_iter}: gates FAIL {gate_reasons} → "
-            f"research={needs_research} experiments={needs_experiments} rewrite={needs_rewrite}"
-        )
-        _log(f"  ↩  {event}")
+        event = f"write_iter={write_iter}: gates FAIL -> research={needs_research} experiments={needs_experiments} rewrite={needs_rewrite}"
+        _log(f"  <- {event}")
         state["loop_log"].append(event)
-        # If tags are entirely absent, give Writer a concrete action instruction
+
         joined_reasons = " ".join(gate_reasons).lower()
         if "no [cite:" in joined_reasons or "no [evid:" in joined_reasons:
             bib = (state["deep_research_output"] or {}).get("annotated_bib") or []
             bib_keys_hint = ", ".join(b.get("key", "") for b in bib[:6] if b.get("key"))
             state["fix_list"] = [
-                f"CRITICAL: You MUST use [CITE:key] tags in every paragraph of the intro and related_work "
-                f"sections. Available bib keys: {bib_keys_hint}. "
-                "Example: 'Prior work [CITE:moe2024] showed X, but lacks Y.' "
-                "Do NOT write prose without citation tags — the gating system will reject your output."
+                f"CRITICAL: Use [CITE:key] tags in intro and related_work. Available keys: {bib_keys_hint}."
             ] + gate_reasons
         else:
             state["fix_list"] = gate_reasons
 
         if needs_research:
-            _log("     → Re-running DeepResearcher (citation / baseline gap) …")
-            extra_queries = gate_reasons
-            _stage_deep_researcher(state, dirs, selected, iteration=write_iter + 10, extra_queries=extra_queries)
-            _log("     → Re-running Skeptic after new research …")
+            _log("     -> Re-running DeepResearcher (citation/baseline gap) ...")
+            _stage_deep_researcher(state, dirs, selected, iteration=write_iter + 10, extra_queries=gate_reasons)
+            _log("     -> Re-running Skeptic ...")
             _stage_skeptic(state, dirs, selected, approach, iteration=state["skeptic_iteration"] + 1)
             state["skeptic_iteration"] += 1
 
         if needs_experiments:
-            _log("     → Re-running Experimenter (EVID coverage gap) …")
+            _log("     -> Re-running Experimenter (EVID coverage gap) ...")
             _stage_experimenter(state, dirs, selected, iteration=write_iter + 1)
 
-        # if only needs_rewrite, fix_list is already set → Writer will self-correct next iter
-
-    # ── Build intermediate LaTeX ──────────────────────────────
+    # ── Build intermediate LaTeX ──
     _build_latex_artifacts(state, dirs)
 
-    # ── Phase 5: Edit ─────────────────────────────────────────
-    _log("Phase 5 · Edit · Editor …")
+    # ══════════════════════════════════════════════════════════
+    # Phase 5: Editor
+    # ══════════════════════════════════════════════════════════
+    _log("Phase 5 · Edit · Editor ...")
     from agents.editor import run as editor_run
     sections = (state["writer_output"] or {}).get("sections") or {}
     state["editor_output"] = editor_run({
@@ -371,62 +557,57 @@ def run_pipeline(
     gate_ok_ed, gate_reasons_ed = run_gates("editor", state)
     state["gate_results"]["editor"] = {"pass": gate_ok_ed, "reasons": gate_reasons_ed}
 
-    # ── Phase 6: Peer Review loop ─────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    # Phase 6: Peer Review loop
+    # ══════════════════════════════════════════════════════════
     from agents.reviewer import run_all as reviewer_run_all, all_pass, collect_revisions
-    _log("Phase 6 · Peer Review …")
+    _log("Phase 6 · Peer Review ...")
 
     for peer_iter in range(1, MAX_PEER_REVIEW_ITER + 1):
-        _log(f"  Phase 6 · Reviewer (iter {peer_iter}) – running MLSys / VLDB / NeurIPS / AAAI …")
+        _log(f"  Reviewer (iter {peer_iter}) ...")
         reviews = reviewer_run_all(state)
         state["reviewer_outputs"] = reviews
         suffix = f"_iter{peer_iter}" if peer_iter > 1 else ""
         save_json(state, dirs["runs"] / f"08_review{suffix}.json")
 
-        scores_str = ", ".join(
-            f"{r['venue']}={r.get('overall', '?')}" for r in reviews
-        )
+        scores_str = ", ".join(f"{r['venue']}={r.get('overall', '?')}" for r in reviews)
         _log(f"    Scores: {scores_str}")
 
         if all_pass(reviews, threshold=REVIEWER_PASS_SCORE):
-            _log(f"  ✓ All reviewers score ≥{REVIEWER_PASS_SCORE} – peer review passed.")
+            _log(f"  OK All reviewers score >= {REVIEWER_PASS_SCORE} - peer review passed.")
             break
 
         if peer_iter == MAX_PEER_REVIEW_ITER:
-            _log(f"  ⚠  Peer review still failing after {peer_iter} iteration(s) – proceeding with best version.")
+            _log(f"  ! Peer review still failing after {peer_iter} iteration(s) - proceeding.")
             break
 
-        # Gather revision feedback and route revision work
         revision_items = collect_revisions(reviews)
         state["reviewer_fix_list"] = revision_items
-        event = (
-            f"peer_iter={peer_iter}: reviewer scores={scores_str} – "
-            f"{len(revision_items)} revision items collected."
-        )
-        _log(f"  ↩  {event}")
+        event = f"peer_iter={peer_iter}: scores={scores_str}, {len(revision_items)} revisions."
+        _log(f"  <- {event}")
         state["loop_log"].append(event)
 
         needs_more_research, needs_more_experiments = _classify_reviewer_feedback(reviews)
 
         if needs_more_research:
-            _log("     → Re-running DeepResearcher (literature gap from reviewers) …")
+            _log("     -> Re-running DeepResearcher (literature gap) ...")
             research_queries = [item for item in revision_items if any(
                 k in item.lower() for k in ["baseline", "literature", "comparison", "citation"]
             )][:4]
             _stage_deep_researcher(state, dirs, selected, iteration=peer_iter + 20, extra_queries=research_queries)
-            _log("     → Re-running Skeptic after new research …")
+            _log("     -> Re-running Skeptic ...")
             _stage_skeptic(state, dirs, selected, approach, iteration=state["skeptic_iteration"] + 1)
             state["skeptic_iteration"] += 1
 
         if needs_more_experiments:
-            _log("     → Re-running Experimenter (experiment gap from reviewers) …")
+            _log("     -> Re-running Experimenter (experiment gap) ...")
             _stage_experimenter(state, dirs, selected, iteration=peer_iter + 10)
 
-        # Cap fix_list to top 5 most critical items — a longer list overwhelms the Writer
         state["fix_list"] = revision_items[:5]
-        _log("     → Re-running Writer with reviewer fix_list …")
+        _log("     -> Re-running Writer with reviewer fix_list ...")
         _stage_writer(state, dirs, topic, venue, selected, approach, iteration=peer_iter + 30)
 
-        _log("     → Re-running Editor …")
+        _log("     -> Re-running Editor ...")
         sections = (state["writer_output"] or {}).get("sections") or {}
         state["editor_output"] = editor_run({
             "sections": sections,
@@ -439,15 +620,24 @@ def run_pipeline(
     final_sections = (state["editor_output"] or {}).get("sections") or sections
     _build_latex_artifacts(state, dirs, sections=final_sections)
 
-    # Compile PDF (ACM sigconf double-column)
-    _log("Compiling PDF (pdflatex × 4) …")
+    # Compile PDF
+    _log("Compiling PDF ...")
     pdf_path = compile_pdf(dirs["paper"])
     if pdf_path:
-        _log(f"  ✓ PDF ready: {pdf_path}")
+        _log(f"  OK PDF ready: {pdf_path}")
     else:
-        _log("  ⚠  PDF compilation failed — see artifacts/paper/*.log for details.")
+        _log("  ! PDF compilation failed - see artifacts/paper/*.log")
 
     _log("Done. Artifacts written.")
+
+    # Index into RAG
+    try:
+        from tools.rag import index_run_artifacts
+        n = index_run_artifacts(dirs["runs"], artifacts_root=artifacts_root)
+        if n > 0:
+            _log(f"RAG: indexed {n} fragments.")
+    except Exception as e:
+        _log(f"RAG index skipped: {e}")
 
     return state
 
@@ -459,41 +649,58 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser(description="EfficientResearch iterative pipeline")
     parser.add_argument("--topic", required=True)
-    parser.add_argument("--venue", default="Workshop, 4–6 pages, double-column")
-    parser.add_argument("--constraints", default=None, help="Problem description / constraints (default: venue)")
+    parser.add_argument("--venue", default="Workshop, 4-6 pages, double-column")
+    parser.add_argument("--constraints", default=None)
     parser.add_argument("--artifacts", default=None)
-    parser.add_argument("--local", action="store_true", help="Use local LLM (vLLM)")
     parser.add_argument("--browser", action="store_true", help="Use browser-based ChatGPT (no API key needed)")
+    parser.add_argument("--sections", default=None, help="Comma-separated section names to regenerate only")
+    parser.add_argument("--focus", default=None, help="Research focus: system | theory | empirical | analysis")
+    parser.add_argument("--resume", action="store_true", help="Resume from last completed stage")
     args = parser.parse_args()
 
     import config
-    if args.local:
-        config.set_use_local_llm(True)
     if args.browser:
         config.set_use_browser_llm(True)
 
     artifacts_root = args.artifacts or str(_REPO_ROOT / "artifacts")
-    state = run_pipeline(args.topic, args.venue, artifacts_root, constraints=args.constraints)
+    sections_list = None
+    if args.sections:
+        sections_list = [s.strip() for s in args.sections.split(",") if s.strip()]
+    try:
+        state = run_pipeline(
+            args.topic, args.venue, artifacts_root,
+            constraints=args.constraints,
+            sections=sections_list,
+            focus=args.focus,
+            resume=args.resume,
+        )
+    finally:
+        if args.browser:
+            try:
+                from tools import browser_llm
+                browser_llm.end_browser_session()
+            except Exception:
+                pass
     dirs = ensure_artifacts_dirs(artifacts_root)
 
-    print("\n══════════════════════════════════════════")
+    print("\n==========================================")
     print("  EfficientResearch pipeline complete")
-    print("══════════════════════════════════════════")
+    print("==========================================")
     print(f"  Paper (LaTeX) : {dirs['paper'] / 'main.tex'}")
     pdf = dirs["paper"] / "main.pdf"
-    print(f"  Paper (PDF)   : {pdf}" + (" ✓" if pdf.exists() else " (compilation failed)"))
+    print(f"  Paper (PDF)   : {pdf}" + (" OK" if pdf.exists() else " (compilation failed)"))
     print(f"  References    : {dirs['paper'] / 'references.bib'}")
     print(f"  Run logs      : {dirs['runs']}")
     print(f"  Gate results  : {json.dumps(state.get('gate_results', {}), indent=4)}")
     if state.get("reviewer_outputs"):
         print("  Reviewer scores:")
         for r in state["reviewer_outputs"]:
-            print(f"    • {r.get('venue')}: overall={r.get('overall')} → {r.get('recommendation')}")
+            print(f"    - {r.get('venue')}: overall={r.get('overall')} -> {r.get('recommendation')}")
     if state.get("loop_log"):
-        print("  Loop events   :")
+        print("  Loop events:")
         for e in state["loop_log"]:
-            print(f"    • {e}")
-    print("══════════════════════════════════════════")
+            print(f"    - {e}")
+    print("==========================================")
 
 
 if __name__ == "__main__":

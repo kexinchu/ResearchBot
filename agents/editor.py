@@ -26,7 +26,7 @@ def run(input_data: dict) -> dict:
         "Preserve [CITE:...], [EVID:...], [SPEC] tags exactly."
     )
     from tools.llm import call_llm
-    raw = call_llm(system, user, json_mode=True, max_tokens=4096)
+    raw = call_llm(system, user, json_mode=True, max_tokens=8192)
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:

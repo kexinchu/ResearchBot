@@ -21,6 +21,8 @@ def create_initial_state(topic: str, venue: str, artifacts_root: str) -> Dict[st
         "fix_list": [],            # actionable fix list when gate fails
         "reviewer_outputs": [],    # list of per-venue review dicts (from reviewer agents)
         "reviewer_fix_list": [],   # aggregated required_revisions from all reviewers
+        "retrieved_memory": "",   # optional: RAG-retrieved past run context for prompts
+        "preferred_focus": "",    # optional: system | theory | empirical | analysis — bias Ideator/Scout
     }
 
 def get_selected_hypotheses(state: Dict[str, Any]) -> List[Dict[str, Any]]:
