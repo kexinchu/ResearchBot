@@ -1,8 +1,14 @@
+# Core dependencies (also defined in pyproject.toml)
+# Preferred install: pip install -e .  or  pip install -e .[all]
 openai>=1.0.0
 pydantic>=2.0
 pyyaml>=6.0
 duckduckgo-search>=6.0.0
 arxiv>=2.1.0
-playwright>=1.40.0
-chromadb>=0.4.0
-sentence-transformers>=2.2.0
+
+# Optional: browser mode
+# playwright>=1.40.0
+
+# Optional: RAG (long-term memory)
+# chromadb>=0.4.0
+# sentence-transformers>=2.2.0

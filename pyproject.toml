@@ -1,22 +1,33 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "efficient-research"
+name = "researchbot"
 version = "0.1.0"
-description = "Multi-agent research + workshop writing system"
+description = "Multi-agent research automation with human-in-the-loop"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
+license = {text = "MIT"}
 dependencies = [
     "openai>=1.0.0",
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    "duckduckgo-search>=6.0.0",
+    "arxiv>=2.1.0",
 ]
 
 [project.optional-dependencies]
+browser = ["playwright>=1.40.0"]
+rag = ["chromadb>=0.4.0", "sentence-transformers>=2.2.0"]
+all = ["researchbot[browser,rag]"]
 dev = ["pytest", "ruff"]
 
+[project.scripts]
+researchbot = "researchbot.cli:main"
+
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["orchestrator*", "agents*", "tools*", "eval*"]
+include = ["researchbot*"]
+
+[tool.setuptools.package-data]
+"researchbot.skills" = ["**/*.md"]

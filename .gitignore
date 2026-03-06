@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+
+# Artifacts (generated per-run)
+artifacts/
+review/
+runs/
+paper/
+rag/
+
+# LLM response cache
+.llm_cache/
+
+# Package build
+*.egg-info/
+
+# Browser profiles
+cookies/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

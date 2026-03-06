@@ -1,0 +1,99 @@
+"""Scout: 粗文献探索 + 筛选。Prompt 来自 skills/scout/SKILL.md；必须能访问网络。"""
+import json
+
+from researchbot.tools.search import search as web_search
+
+def _load_prompt() -> str:
+    from researchbot.tools.skills_loader import get_skill_prompt
+    return get_skill_prompt("scout")
+
+def run(input_data: dict) -> dict:
+    """
+    Input: hypotheses (list of HypothesisCards), optional topic
+    先通过网络搜索获取与 topic/hypotheses 相关的论文与博客，再让 LLM 产出 related_work、新颖性/可行性、selected_ids。
+    Output: related_work map, novelty/feasibility scores, selected_ids, rationale
+    """
+    hypotheses = input_data.get("hypotheses", [])
+    topic = input_data.get("topic", "")
+    preferred_focus = (input_data.get("preferred_focus") or "").strip().lower()
+    system = _load_prompt()
+
+    # Explorer：必须访问网络，查询论文/blog
+    # 学术论文查询用 ArXiv（精准），博客/survey 用 web
+    web_results: list = []
+    if topic:
+        web_results.extend(web_search(f"{topic}", max_results=6, source="arxiv"))
+        web_results.extend(web_search(f"{topic} survey overview", max_results=4, source="web"))
+    for h in hypotheses[:5]:
+        claim = (h.get("claim") or "")[:80]
+        if claim:
+            web_results.extend(web_search(f"{claim}", max_results=3, source="arxiv"))
+
+    # 去重（按 url 或 title）
+    seen = set()
+    unique = []
+    for r in web_results:
+        key = (r.get("url") or "") or (r.get("title") or "")
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    # Filter out results with empty snippets (not useful for grounding)
+    quality_results = [r for r in unique if (r.get("snippet") or "").strip()]
+    if len(quality_results) < len(unique):
+        print(f"[scout] Filtered {len(unique) - len(quality_results)} results with empty snippets.", flush=True)
+
+    search_block = "No web search results (check network or install duckduckgo-search)."
+    if quality_results:
+        search_block = json.dumps(
+            [{"title": r.get("title", ""), "snippet": r.get("snippet", ""), "url": r.get("url", "")} for r in quality_results],
+            indent=2,
+            ensure_ascii=False,
+        )
+    elif unique:
+        # All results had empty snippets — use titles only but warn
+        search_block = json.dumps(
+            [{"title": r.get("title", ""), "snippet": "(no abstract available)", "url": r.get("url", "")} for r in unique],
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    user = (
+        f"Topic: {topic}\n\n"
+        f"Web search results (use these to build related_work and scores):\n{search_block}\n\n"
+        f"Hypotheses (JSON):\n{json.dumps(hypotheses, indent=2)}\n\n"
+    )
+    if preferred_focus == "system":
+        user += (
+            "Selection bias: The user prefers SYSTEM-oriented research. When choosing selected_ids (1–2 hypotheses), "
+            "prefer hypotheses that concern system design, architecture, algorithms, or performance (latency, throughput, scalability). "
+            "Favor feasibility for building or evaluating a system.\n\n"
+        )
+    elif preferred_focus in ("theory", "empirical", "analysis"):
+        user += f"Selection bias: Prefer hypotheses that best match contribution type '{preferred_focus}' when scoring and selecting.\n\n"
+    user += "Output valid JSON only."
+    from researchbot.tools.llm import call_llm
+    raw = call_llm(system, user, json_mode=True)
+    try:
+        out = json.loads(raw)
+        if not isinstance(out, dict):
+            out = {}
+    except json.JSONDecodeError:
+        out = {}
+    related_work = out.get("related_work") or []
+    hypothesis_scores = out.get("hypothesis_scores") or []
+    selected_ids = out.get("selected_ids") or []
+    if not selected_ids and hypotheses:
+        fallback_id = hypotheses[0].get("id") or "H1"
+        selected_ids = [fallback_id]
+    # Filter out None/empty and ensure string type
+    selected_ids = [str(s) for s in selected_ids if s]
+    if not selected_ids and hypotheses:
+        selected_ids = ["H1"]
+    return {
+        "related_work": related_work,
+        "hypothesis_scores": hypothesis_scores,
+        "selected_ids": selected_ids,
+        "selection_rationale": out.get("selection_rationale", ""),
+        "web_results_count": len(unique),
+    }
