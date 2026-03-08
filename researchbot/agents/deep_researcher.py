@@ -83,6 +83,8 @@ def run(input_data: dict) -> dict:
         f"Related work (from Scout):\n{json.dumps(related_work, indent=2)}\n\n"
         f"Web search results:\n{search_block}\n"
         f"{extra_block}\n"
+        "IMPORTANT: Include 'comparison_matrix' (array of objects with method/paper_key/task/dataset/best_metric/limitation) "
+        "and add 'category' and 'limitations' fields to each annotated_bib entry.\n"
         "Output valid JSON only."
     )
 
@@ -99,4 +101,5 @@ def run(input_data: dict) -> dict:
         "baseline_checklist": out.get("baseline_checklist") or [],
         "metrics_checklist":  out.get("metrics_checklist") or [],
         "gap_summary":        out.get("gap_summary", ""),
+        "comparison_matrix":  out.get("comparison_matrix") or [],
     }

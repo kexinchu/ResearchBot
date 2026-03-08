@@ -90,6 +90,80 @@ def inject_result_tables(sections: Dict[str, str], result_tables: List[Dict[str,
     return sections
 
 
+_TEMPLATES = {
+    "acm": {
+        "preamble_pre": r"\PassOptionsToPackage{disable}{microtype}" + "\n",
+        "documentclass": r"\documentclass[sigconf,nonacm]{acmart}",
+        "packages": [
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage{amsmath,amssymb,amsfonts}",
+            r"\usepackage{graphicx}",
+            r"\usepackage{textcomp}",
+            r"\usepackage{xcolor}",
+            r"\usepackage{booktabs}",
+        ],
+        "abstract_before_maketitle": True,
+        "bibstyle": "ACM-Reference-Format",
+    },
+    "neurips": {
+        "preamble_pre": "",
+        "documentclass": r"\documentclass{article}",
+        "packages": [
+            r"\usepackage[final]{neurips_2024}",
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage{amsmath,amssymb,amsfonts}",
+            r"\usepackage{graphicx}",
+            r"\usepackage{booktabs}",
+            r"\usepackage{hyperref}",
+            r"\usepackage{xcolor}",
+        ],
+        "abstract_before_maketitle": False,
+        "bibstyle": "plainnat",
+    },
+    "icml": {
+        "preamble_pre": "",
+        "documentclass": r"\documentclass[accepted]{icml2024}",
+        "packages": [
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage{amsmath,amssymb,amsfonts}",
+            r"\usepackage{graphicx}",
+            r"\usepackage{booktabs}",
+            r"\usepackage{hyperref}",
+            r"\usepackage{xcolor}",
+        ],
+        "abstract_before_maketitle": False,
+        "bibstyle": "icml2024",
+    },
+    "iclr": {
+        "preamble_pre": "",
+        "documentclass": r"\documentclass{article}",
+        "packages": [
+            r"\usepackage{iclr2025_conference}",
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage{amsmath,amssymb,amsfonts}",
+            r"\usepackage{graphicx}",
+            r"\usepackage{booktabs}",
+            r"\usepackage{hyperref}",
+            r"\usepackage{xcolor}",
+        ],
+        "abstract_before_maketitle": False,
+        "bibstyle": "iclr2025_conference",
+    },
+}
+
+
+def _detect_template(venue: str) -> str:
+    """Detect LaTeX template from venue string."""
+    v = venue.lower()
+    if "neurips" in v or "nips" in v:
+        return "neurips"
+    if "icml" in v:
+        return "icml"
+    if "iclr" in v:
+        return "iclr"
+    return "acm"
+
+
 def build_latex(
     sections: Dict[str, str],
     output_dir: str | Path,
@@ -97,11 +171,12 @@ def build_latex(
     bib_keys: Optional[List[str]] = None,
     paper_title: str = "",
     paper_authors: str = "Anonymous Authors",
+    venue: str = "",
 ) -> Path:
-    """Write main.tex (ACM sigconf double-column) to output_dir.
+    """Write main.tex to output_dir using venue-appropriate template.
 
+    Supported templates: ACM sigconf (default), NeurIPS, ICML, ICLR.
     Converts [CITE:key] → \\cite{key} and other audit tags before writing.
-    Inserts \\title / \\author / \\maketitle so the document compiles.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,24 +184,20 @@ def build_latex(
 
     safe_title = paper_title.replace("&", r"\&").replace("_", r"\_") if paper_title else "Research Paper"
 
-    # ACM sigconf: double-column, nonacm removes rights-management boilerplate
-    # \PassOptionsToPackage{disable}{microtype} must precede \documentclass to prevent
-    # the "font expansion only possible with scalable fonts" pdfTeX error on systems
-    # with bitmap Type 3 fonts.
-    # NOTE: \maketitle is emitted AFTER \begin{abstract}...\end{abstract} per ACM requirements
-    preamble = (
-        r"\PassOptionsToPackage{disable}{microtype}" + "\n"
-        r"\documentclass[sigconf,nonacm]{acmart}" + "\n"
-        r"\usepackage[T1]{fontenc}" + "\n"
-        r"\usepackage{amsmath,amssymb,amsfonts}" + "\n"
-        r"\usepackage{graphicx}" + "\n"
-        r"\usepackage{textcomp}" + "\n"
-        r"\usepackage{xcolor}" + "\n"
-        r"\usepackage{booktabs}" + "\n"
-        r"\begin{document}" + "\n"
-        f"\\title{{{safe_title}}}\n"
-        f"\\author{{{paper_authors}}}\n"
-    )
+    # Select template based on venue
+    template_name = _detect_template(venue)
+    tmpl = _TEMPLATES[template_name]
+
+    # Build preamble
+    preamble_lines = []
+    if tmpl["preamble_pre"]:
+        preamble_lines.append(tmpl["preamble_pre"])
+    preamble_lines.append(tmpl["documentclass"])
+    preamble_lines.extend(tmpl["packages"])
+    preamble_lines.append(r"\begin{document}")
+    preamble_lines.append(f"\\title{{{safe_title}}}")
+    preamble_lines.append(f"\\author{{{paper_authors}}}")
+    preamble = "\n".join(preamble_lines) + "\n"
 
     order = [
         "abstract", "intro", "background", "method",
@@ -144,14 +215,18 @@ def build_latex(
         "conclusion":   "Conclusion",
     }
 
-    # ACM requires abstract BEFORE \maketitle
     abstract_raw = sections.get("abstract", "")
     abstract_content = _normalize_for_latex(abstract_raw.strip()) if abstract_raw.strip() else "% TODO: Abstract"
-    parts = [
-        preamble,
-        "\\begin{abstract}\n" + abstract_content + "\n\\end{abstract}\n",
-        r"\maketitle" + "\n\n",
-    ]
+
+    parts = [preamble]
+    if tmpl["abstract_before_maketitle"]:
+        # ACM style: abstract before \maketitle
+        parts.append("\\begin{abstract}\n" + abstract_content + "\n\\end{abstract}\n")
+        parts.append(r"\maketitle" + "\n\n")
+    else:
+        # NeurIPS/ICML/ICLR style: \maketitle before abstract
+        parts.append(r"\maketitle" + "\n\n")
+        parts.append("\\begin{abstract}\n" + abstract_content + "\n\\end{abstract}\n\n")
 
     body_order = [n for n in order if n != "abstract"]
     for name in body_order:
@@ -162,8 +237,7 @@ def build_latex(
 
     parts.append("\n")
     if bib_keys:
-        # ACM uses ACM-Reference-Format bibstyle (bundled with acmart)
-        parts.append("\\bibliographystyle{ACM-Reference-Format}\n\\bibliography{references}\n")
+        parts.append(f"\\bibliographystyle{{{tmpl['bibstyle']}}}\n\\bibliography{{references}}\n")
     parts.append("\\end{document}\n")
 
     main_tex = output_dir / f"{main_name}.tex"

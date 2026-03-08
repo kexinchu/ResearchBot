@@ -1,15 +1,69 @@
-"""Web and academic search tool. Supports DuckDuckGo (web), ArXiv, and Semantic Scholar."""
+"""Web and academic search tool. Supports DuckDuckGo (web), ArXiv, and Semantic Scholar.
+
+Features:
+- In-memory + optional disk cache for search results (avoids redundant API calls)
+- Thread-safe with semaphore-based concurrency control
+- Rate-limit handling with exponential backoff
+"""
+import hashlib
 import json
+import os
 import re
 import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Global semaphore: limit concurrent ArXiv requests to avoid HTTP 429
 _arxiv_semaphore = threading.Semaphore(2)
+
+# ── Search result cache ──────────────────────────────────────────────────────
+# In-memory cache (lives for pipeline duration) + optional disk cache
+_search_cache: Dict[str, List[Dict[str, str]]] = {}
+_search_cache_lock = threading.Lock()
+_SEARCH_CACHE_DIR = os.environ.get("RESEARCHBOT_SEARCH_CACHE_DIR", "").strip()
+
+
+def _search_cache_key(query: str, source: str, max_results: int) -> str:
+    blob = f"{source}|{max_results}|{query.strip().lower()}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _search_cache_get(key: str) -> Optional[List[Dict[str, str]]]:
+    with _search_cache_lock:
+        if key in _search_cache:
+            return _search_cache[key]
+    # Try disk cache
+    if _SEARCH_CACHE_DIR:
+        p = Path(_SEARCH_CACHE_DIR) / f"{key}.json"
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                results = data.get("results") or []
+                with _search_cache_lock:
+                    _search_cache[key] = results
+                return results
+            except Exception:
+                pass
+    return None
+
+
+def _search_cache_set(key: str, results: List[Dict[str, str]]) -> None:
+    with _search_cache_lock:
+        _search_cache[key] = results
+    if _SEARCH_CACHE_DIR:
+        try:
+            p = Path(_SEARCH_CACHE_DIR)
+            p.mkdir(parents=True, exist_ok=True)
+            (p / f"{key}.json").write_text(
+                json.dumps({"results": results, "ts": time.time()}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
 def _sanitize_query(query: str, max_len: int = 150) -> str:
@@ -229,26 +283,36 @@ def search(
     **kwargs: Any,
 ) -> List[Dict[str, str]]:
     """
-    Unified search interface.
+    Unified search interface with caching.
 
     source="auto"   — tries ArXiv first, falls back to DuckDuckGo (good for academic queries)
     source="arxiv"  — ArXiv only (academic papers)
     source="ss"     — Semantic Scholar only (academic papers with citations)
     source="web"    — DuckDuckGo only (blogs, surveys, web pages)
     source="all"    — combines ArXiv + Semantic Scholar + DuckDuckGo, deduped
+
+    Results are cached in-memory (pipeline duration) and optionally on disk
+    (set RESEARCHBOT_SEARCH_CACHE_DIR to enable cross-run caching).
     """
+    # Check cache first
+    ck = _search_cache_key(query, source, max_results)
+    cached = _search_cache_get(ck)
+    if cached is not None:
+        return cached
+
+    results: List[Dict[str, str]] = []
+
     if source == "arxiv":
-        return _search_arxiv(query, max_results=max_results)
+        results = _search_arxiv(query, max_results=max_results)
 
-    if source == "ss":
-        return _search_semantic_scholar(query, max_results=max_results)
+    elif source == "ss":
+        results = _search_semantic_scholar(query, max_results=max_results)
 
-    if source == "web":
-        return _search_web(query, max_results=max_results)
+    elif source == "web":
+        results = _search_web(query, max_results=max_results)
 
-    if source == "all":
+    elif source == "all":
         per = max(2, max_results // 3)
-        # Run all three sources in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
         combined: List[Dict[str, str]] = []
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -262,10 +326,18 @@ def search(
                     combined.extend(f.result())
                 except Exception:
                     pass
-        return _deduplicate(combined)[:max_results]
+        results = _deduplicate(combined)[:max_results]
 
-    # source="auto": academic-first, fallback to web
-    academic = _search_arxiv(query, max_results=max_results)
-    if academic:
-        return academic[:max_results]
-    return _search_web(query, max_results=max_results)
+    else:
+        # source="auto": academic-first, fallback to web
+        academic = _search_arxiv(query, max_results=max_results)
+        if academic:
+            results = academic[:max_results]
+        else:
+            results = _search_web(query, max_results=max_results)
+
+    # Cache results
+    if results:
+        _search_cache_set(ck, results)
+
+    return results

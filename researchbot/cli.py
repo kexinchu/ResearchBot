@@ -131,10 +131,23 @@ def cmd_run(args):
     print(f"  References    : {dirs['paper'] / 'references.bib'}")
     print(f"  Run logs      : {dirs['runs']}")
     print(f"  Review MDs    : {Path(artifacts_root) / 'review'}")
+    # Self-review results
+    sr = (state.get("self_review") or {}).get("review_result") or {}
+    if sr.get("overall_score"):
+        print(f"  Self-review   : score={sr['overall_score']}/5, {sr.get('overall_assessment', '?')}")
+    # Citation verification
+    cv = (state.get("citation_verification") or {}).get("verification_results") or {}
+    if cv.get("total_citations"):
+        print(f"  Citations     : {cv['total_citations']} total, {cv.get('issues_found', 0)} issue(s), status={cv.get('overall_status', '?')}")
+    # Reviewer scores
     if state.get("reviewer_outputs"):
         print("  Reviewer scores:")
         for r in state["reviewer_outputs"]:
             print(f"    - {r.get('venue')}: overall={r.get('overall')} -> {r.get('recommendation')}")
+    # Rebuttal
+    if state.get("rebuttal"):
+        rebuttal_path = Path(artifacts_root) / "review" / "09_rebuttal.md"
+        print(f"  Rebuttal      : {rebuttal_path}")
     print("==========================================")
 
 

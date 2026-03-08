@@ -23,6 +23,11 @@ def create_initial_state(topic: str, venue: str, artifacts_root: str) -> Dict[st
         "reviewer_fix_list": [],   # aggregated required_revisions from all reviewers
         "retrieved_memory": "",   # optional: RAG-retrieved past run context for prompts
         "preferred_focus": "",    # optional: system | theory | empirical | analysis — bias Ideator/Scout
+        "gap_analysis": [],       # from Ideator: 5-dimension gap analysis
+        "citation_verification": None,  # from Citation Verifier
+        "deai_output": None,      # from De-AI Writer
+        "self_review": None,      # from Self-Reviewer
+        "rebuttal": None,         # from Rebuttal Writer
     }
 
 def get_selected_hypotheses(state: Dict[str, Any]) -> List[Dict[str, Any]]:

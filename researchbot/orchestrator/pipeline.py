@@ -7,12 +7,16 @@ Human intervention is the default at every major stage:
   - Edited content is read back as stage output for the next round
 
 Flow:
-  Phase 1 · Explore   : Ideator → Scout → DeepResearcher (human review loop)
-  Phase 2 · Review    : Skeptic ⟲ DeepResearcher  (up to MAX_REVIEW_ITER)
-  Phase 3 · Experiment: Experimenter (human review loop)
-  Phase 4 · Write     : Writer (human review loop) ⟲ gates
-  Phase 5 · Edit      : Editor
-  Phase 6 · PeerReview: Reviewer ⟲ Writer  (up to MAX_PEER_REVIEW_ITER)
+  Phase 1 · Explore    : Ideator → Scout → DeepResearcher (human review loop)
+  Phase 2 · Review     : Skeptic ⟲ DeepResearcher  (up to MAX_REVIEW_ITER)
+  Phase 3 · Experiment : Experimenter (human review loop)
+  Phase 4 · Write      : Writer (human review loop) ⟲ gates
+  Phase 5 · Edit       : Editor
+  Phase 5b · Verify    : Citation Verifier (catch hallucinated citations)
+  Phase 5c · De-AI     : De-AI Writer (remove AI writing patterns)
+  Phase 5d · SelfReview: Self-Reviewer (6-item quality checklist, can trigger re-write)
+  Phase 6 · PeerReview : Reviewer ⟲ Writer  (up to MAX_PEER_REVIEW_ITER)
+  Phase 7 · Rebuttal   : Rebuttal Writer (optional, generates rebuttal from reviews)
 """
 import json
 import os
@@ -24,6 +28,7 @@ from researchbot.orchestrator.human_review import (
     ensure_review_dir,
     write_ideator_report, prompt_hypothesis_selection,
     write_deep_research_report, read_deep_research_md,
+    write_skeptic_report,
     write_experimenter_report, read_experimenter_md,
     write_writer_report, read_writer_md,
     prompt_edit_and_confirm,
@@ -44,8 +49,30 @@ REVIEWER_PASS_SCORE  = int(os.environ.get("RESEARCHBOT_REVIEWER_PASS_SCORE", "4"
 # Stage functions
 # ══════════════════════════════════════════════════════════════
 
+_PIPELINE_PHASES = [
+    ("1", "Explore",     "Ideator + Scout + DeepResearcher"),
+    ("2", "Review",      "Skeptic adversarial review"),
+    ("3", "Experiment",  "Experiment design"),
+    ("4", "Write",       "Paper drafting"),
+    ("5", "Edit",        "Editor + Citation + De-AI + Self-Review"),
+    ("6", "PeerReview",  "Venue-specific review"),
+    ("7", "Rebuttal",    "Rebuttal generation"),
+]
+_current_phase = 0
+
+
 def _log(msg: str) -> None:
     print(f"[pipeline] {msg}", flush=True)
+
+
+def _log_phase_start(phase_idx: int) -> None:
+    """Print a progress banner showing current phase and overall progress."""
+    global _current_phase
+    _current_phase = phase_idx
+    total = len(_PIPELINE_PHASES)
+    num, name, desc = _PIPELINE_PHASES[phase_idx]
+    bar = "=" * (phase_idx + 1) + "-" * (total - phase_idx - 1)
+    print(f"\n[{bar}] Phase {num}/{total}: {name} — {desc}", flush=True)
 
 
 def _stage_ideator(state: dict, dirs: dict, topic: str, venue: str, constraints: str) -> None:
@@ -66,6 +93,7 @@ def _stage_ideator(state: dict, dirs: dict, topic: str, venue: str, constraints:
         })
         state["hypotheses"] = out.get("hypotheses") or []
     state["related_work_summary"] = out.get("related_work_summary") or ""
+    state["gap_analysis"] = out.get("gap_analysis") or []
     state["unsolved_problems"] = out.get("unsolved_problems") or []
     state["research_worthy"] = out.get("research_worthy") or []
     state["proposals"] = out.get("proposals") or []
@@ -168,6 +196,7 @@ def _stage_writer(
         "method_outline": approach,
         "annotated_bib": dr.get("annotated_bib", []),
         "related_work_draft": dr.get("related_work_draft") or "",
+        "comparison_matrix": dr.get("comparison_matrix") or [],
         "hypotheses": selected,
         "skeptic_output": state["skeptic_output"],
         "experiment_output": state["experimenter_output"],
@@ -191,6 +220,38 @@ def _stage_writer(
     save_json(state, dirs["runs"] / f"06_writer{suffix}.json")
 
 
+def _write_rebuttal_report(state: dict, review_dir: Path) -> Path:
+    """Write rebuttal to Markdown for human review."""
+    out_path = review_dir / "09_rebuttal.md"
+    rebuttal = (state.get("rebuttal") or {}).get("rebuttal") or {}
+    lines = ["# Rebuttal", "", f"## Summary", "", rebuttal.get("summary") or "(none)", ""]
+
+    for resp in rebuttal.get("reviewer_responses") or []:
+        lines.append(f"## Reviewer: {resp.get('reviewer_id', 'Unknown')}")
+        lines.append(f"Overall score: {resp.get('overall_score', '?')}")
+        lines.append("")
+        for c in resp.get("comments") or []:
+            lines.append(f"### [{c.get('classification', '?').upper()}] {c.get('original_comment', '')[:100]}")
+            lines.append(f"- **Strategy**: {c.get('strategy', '')}")
+            lines.append(f"- **Response**: {c.get('response', '')}")
+            changes = c.get("paper_changes") or []
+            if changes:
+                lines.append("- **Paper changes**:")
+                for ch in changes:
+                    lines.append(f"  - {ch}")
+            lines.append("")
+
+    revisions = rebuttal.get("paper_revision_summary") or []
+    if revisions:
+        lines.extend(["## Paper Revision Summary", ""])
+        for r in revisions:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
 def _build_latex_artifacts(state: dict, dirs: dict, sections: dict = None) -> None:
     if sections is None:
         sections = (state["writer_output"] or {}).get("sections") or {}
@@ -202,6 +263,7 @@ def _build_latex_artifacts(state: dict, dirs: dict, sections: dict = None) -> No
         sections_with_tables, dirs["paper"], main_name="main",
         bib_keys=bib_keys,
         paper_title=state.get("paper_title") or "Research Paper",
+        venue=state.get("venue") or "",
     )
     save_citations_to_bib(bib_entries, dirs["paper"] / "references.bib")
 
@@ -243,7 +305,12 @@ def _detect_resume_stage(runs_dir) -> Optional[str]:
     from pathlib import Path
     runs = Path(runs_dir)
     stage_order = [
-        ("07_editor",        "peer_review"),
+        ("09_rebuttal",      "done"),
+        ("08_review",        "rebuttal"),
+        ("07d_self_review",  "peer_review"),
+        ("07c_deai",         "self_review"),
+        ("07b_citation",     "deai"),
+        ("07_editor",        "citation_verify"),
         ("06_writer",        "editor"),
         ("05_experimenter",  "writer"),
         ("04_skeptic",       "experimenter"),
@@ -343,6 +410,7 @@ def run_pipeline(
             "sections": sections_dict,
             "contribution_statement": state.get("contribution_statement") or "",
             "paper_title": state.get("paper_title") or "",
+            "skeptic_output": state.get("skeptic_output") or {},
         })
         save_json(state, dirs["runs"] / "07_editor.json")
         final_sections = (state["editor_output"] or {}).get("sections") or sections_dict
@@ -353,7 +421,8 @@ def run_pipeline(
         return state
 
     # ── Resume skip helper ──
-    _STAGE_ORDER = ["ideator", "scout", "deep_researcher", "skeptic", "experimenter", "writer", "editor", "peer_review"]
+    _STAGE_ORDER = ["ideator", "scout", "deep_researcher", "skeptic", "experimenter", "writer",
+                     "editor", "citation_verify", "deai", "self_review", "peer_review", "rebuttal"]
     def _should_skip(stage_name: str) -> bool:
         if not resume_from:
             return False
@@ -362,6 +431,7 @@ def run_pipeline(
     # ══════════════════════════════════════════════════════════
     # Phase 1: Explore
     # ══════════════════════════════════════════════════════════
+    _log_phase_start(0)
     if _should_skip("ideator"):
         _log("Phase 1 · Ideator ... (skipped, loaded from checkpoint)")
     else:
@@ -418,6 +488,7 @@ def run_pipeline(
     # ══════════════════════════════════════════════════════════
     # Phase 2: Skeptic review loop
     # ══════════════════════════════════════════════════════════
+    _log_phase_start(1)
     approach = "Selected hypotheses: " + json.dumps(
         [h.get("claim") for h in selected], indent=2
     )
@@ -449,9 +520,14 @@ def run_pipeline(
                     _log(f"  OK Review loop converged after {review_iter} iteration(s).")
                 break
 
+    # Write Skeptic report for human review
+    write_skeptic_report(state, review_dir)
+    _log(f"  Skeptic report: {review_dir / '04_skeptic.md'}")
+
     # ══════════════════════════════════════════════════════════
     # Phase 3: Experimenter (human review loop)
     # ══════════════════════════════════════════════════════════
+    _log_phase_start(2)
     if _should_skip("experimenter"):
         _log("Phase 3 · Experiment ... (skipped, loaded from checkpoint)")
     else:
@@ -476,7 +552,8 @@ def run_pipeline(
     # ══════════════════════════════════════════════════════════
     # Phase 4: Writer (human review loop + gates)
     # ══════════════════════════════════════════════════════════
-    from researchbot.eval.gates import run_gates
+    _log_phase_start(3)
+    from researchbot.eval.gates import run_gates, build_actionable_fix_list
     state["gate_results"] = state.get("gate_results") or {}
 
     for write_iter in range(1, MAX_WRITE_ITER + 1):
@@ -519,15 +596,8 @@ def run_pipeline(
         _log(f"  <- {event}")
         state["loop_log"].append(event)
 
-        joined_reasons = " ".join(gate_reasons).lower()
-        if "no [cite:" in joined_reasons or "no [evid:" in joined_reasons:
-            bib = (state["deep_research_output"] or {}).get("annotated_bib") or []
-            bib_keys_hint = ", ".join(b.get("key", "") for b in bib[:6] if b.get("key"))
-            state["fix_list"] = [
-                f"CRITICAL: Use [CITE:key] tags in intro and related_work. Available keys: {bib_keys_hint}."
-            ] + gate_reasons
-        else:
-            state["fix_list"] = gate_reasons
+        # Build actionable fix instructions from gate failures
+        state["fix_list"] = build_actionable_fix_list(gate_reasons, state)
 
         if needs_research:
             _log("     -> Re-running DeepResearcher (citation/baseline gap) ...")
@@ -544,7 +614,8 @@ def run_pipeline(
     _build_latex_artifacts(state, dirs)
 
     # ══════════════════════════════════════════════════════════
-    # Phase 5: Editor
+    # Phase 5: Editor + Citation + De-AI + Self-Review
+    _log_phase_start(4)
     # ══════════════════════════════════════════════════════════
     _log("Phase 5 · Edit · Editor ...")
     from researchbot.agents.editor import run as editor_run
@@ -553,6 +624,7 @@ def run_pipeline(
         "sections": sections,
         "contribution_statement": state.get("contribution_statement") or "",
         "paper_title": state.get("paper_title") or "",
+        "skeptic_output": state.get("skeptic_output") or {},
     })
     save_json(state, dirs["runs"] / "07_editor.json")
 
@@ -560,8 +632,90 @@ def run_pipeline(
     state["gate_results"]["editor"] = {"pass": gate_ok_ed, "reasons": gate_reasons_ed}
 
     # ══════════════════════════════════════════════════════════
+    # Phase 5b: Citation Verification
+    # ══════════════════════════════════════════════════════════
+    _log("Phase 5b · Citation Verification ...")
+    from researchbot.agents.citation_verifier import run as citation_verify_run
+    editor_sections = (state["editor_output"] or {}).get("sections") or sections
+    dr = state.get("deep_research_output") or {}
+    cite_result = citation_verify_run({
+        "sections": editor_sections,
+        "annotated_bib": dr.get("annotated_bib") or [],
+    })
+    state["citation_verification"] = cite_result
+    save_json(state, dirs["runs"] / "07b_citation_verify.json")
+    cv = cite_result.get("verification_results") or {}
+    _log(f"  -> {cv.get('total_citations', 0)} citations, "
+         f"{cv.get('issues_found', 0)} issue(s), status={cv.get('overall_status', '?')}")
+
+    # If critical citation issues found, feed back to Writer as fix_list
+    critical_issues = [i for i in (cite_result.get("issues") or [])
+                       if i.get("severity") in ("CRITICAL", "HIGH")]
+    if critical_issues:
+        _log(f"  ! {len(critical_issues)} critical/high citation issue(s) — adding to fix_list.")
+        state["fix_list"] = [
+            f"Citation issue ({i.get('severity')}): {i.get('description')}" for i in critical_issues[:5]
+        ]
+
+    # ══════════════════════════════════════════════════════════
+    # Phase 5c: De-AI Writer (remove AI writing patterns)
+    # ══════════════════════════════════════════════════════════
+    _log("Phase 5c · De-AI Writer ...")
+    from researchbot.agents.deai_writer import run as deai_run
+    deai_input_sections = (state["editor_output"] or {}).get("sections") or sections
+    deai_output = deai_run({"sections": deai_input_sections})
+    state["deai_output"] = deai_output
+    # Update editor_output with de-AI'd sections
+    state["editor_output"] = {"sections": deai_output.get("sections") or deai_input_sections}
+    save_json(state, dirs["runs"] / "07c_deai.json")
+    _log("  -> AI writing patterns removed.")
+
+    # ══════════════════════════════════════════════════════════
+    # Phase 5d: Self-Review (6-item quality checklist)
+    # ══════════════════════════════════════════════════════════
+    _log("Phase 5d · Self-Review ...")
+    from researchbot.agents.self_reviewer import run as self_review_run
+    self_review_input = {
+        "sections": (state["editor_output"] or {}).get("sections") or {},
+        "contribution_statement": state.get("contribution_statement") or "",
+        "venue": venue,
+        "annotated_bib": dr.get("annotated_bib") or [],
+    }
+    self_review_result = self_review_run(self_review_input)
+    state["self_review"] = self_review_result
+    save_json(state, dirs["runs"] / "07d_self_review.json")
+    review_data = self_review_result.get("review_result") or {}
+    _log(f"  -> Score: {review_data.get('overall_score', '?')}/5, "
+         f"Assessment: {review_data.get('overall_assessment', '?')}")
+    critical = review_data.get("critical_issues") or []
+    if critical:
+        _log(f"  -> {len(critical)} critical issue(s): {critical[:3]}")
+
+    # If self-review identifies major issues, re-run writer with fix_list
+    if review_data.get("overall_assessment") == "needs_major_revision":
+        sr_fixes = review_data.get("fix_list") or []
+        if sr_fixes:
+            _log("  ! Self-review found major issues — re-running Writer ...")
+            state["fix_list"] = sr_fixes[:5]
+            _stage_writer(state, dirs, topic, venue, selected, approach, iteration=99)
+            _log("  Re-running Editor ...")
+            sections = (state["writer_output"] or {}).get("sections") or {}
+            state["editor_output"] = editor_run({
+                "sections": sections,
+                "contribution_statement": state.get("contribution_statement") or "",
+                "paper_title": state.get("paper_title") or "",
+                "skeptic_output": state.get("skeptic_output") or {},
+            })
+            save_json(state, dirs["runs"] / "07_editor_selfreview.json")
+            # Re-run de-AI on the rewritten sections
+            _log("  Re-running De-AI Writer ...")
+            deai_output = deai_run({"sections": (state["editor_output"] or {}).get("sections") or {}})
+            state["editor_output"] = {"sections": deai_output.get("sections") or {}}
+
+    # ══════════════════════════════════════════════════════════
     # Phase 6: Peer Review loop
     # ══════════════════════════════════════════════════════════
+    _log_phase_start(5)
     from researchbot.agents.reviewer import run_all as reviewer_run_all, all_pass, collect_revisions
     _log("Phase 6 · Peer Review ...")
 
@@ -615,8 +769,28 @@ def run_pipeline(
             "sections": sections,
             "contribution_statement": state.get("contribution_statement") or "",
             "paper_title": state.get("paper_title") or "",
+            "skeptic_output": state.get("skeptic_output") or {},
         })
         save_json(state, dirs["runs"] / f"07_editor_peer{peer_iter}.json")
+
+    # ══════════════════════════════════════════════════════════
+    # Phase 7: Rebuttal (optional — generates rebuttal from reviews)
+    _log_phase_start(6)
+    # ══════════════════════════════════════════════════════════
+    if state.get("reviewer_outputs"):
+        _log("Phase 7 · Rebuttal Writer ...")
+        from researchbot.agents.rebuttal_writer import run as rebuttal_run
+        rebuttal_result = rebuttal_run({
+            "reviewer_outputs": state["reviewer_outputs"],
+            "sections": (state["editor_output"] or {}).get("sections") or {},
+            "contribution_statement": state.get("contribution_statement") or "",
+            "experimenter_output": state.get("experimenter_output") or {},
+        })
+        state["rebuttal"] = rebuttal_result
+        save_json(state, dirs["runs"] / "09_rebuttal.json")
+        # Write rebuttal to review dir
+        _write_rebuttal_report(state, review_dir)
+        _log("  -> Rebuttal generated. See review/09_rebuttal.md")
 
     # Rebuild final LaTeX from editor output
     final_sections = (state["editor_output"] or {}).get("sections") or sections

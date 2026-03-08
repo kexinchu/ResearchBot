@@ -41,4 +41,5 @@ def run(input_data: dict) -> dict:
         "rejection_risks":        out.get("rejection_risks") or [],
         "required_experiments":   out.get("required_experiments") or [],
         "threats_to_validity":    out.get("threats_to_validity") or [],
+        "methodology_gaps":       out.get("methodology_gaps") or [],
     }

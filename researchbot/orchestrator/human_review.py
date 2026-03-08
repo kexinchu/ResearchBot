@@ -24,9 +24,23 @@ def write_ideator_report(state: Dict[str, Any], review_dir: Path) -> Path:
         (state.get("related_work_summary") or "(none)").strip(),
         "",
         "---",
-        "## 2. Unsolved Problems",
+        "## 2. Gap Analysis",
         "",
     ]
+    for i, g in enumerate(state.get("gap_analysis") or [], 1):
+        if isinstance(g, dict):
+            lines.append(f"### Gap {i} ({g.get('type', 'unknown')})")
+            lines.append(f"- **Gap**: {g.get('gap', '')}")
+            lines.append(f"- **Opportunity**: {g.get('opportunity', '')}")
+            lines.append(f"- **Feasibility**: {g.get('feasibility', '')}")
+            lines.append("")
+    if not state.get("gap_analysis"):
+        lines += ["(none)", ""]
+    lines.extend([
+        "---",
+        "## 3. Unsolved Problems",
+        "",
+    ])
     for i, u in enumerate(state.get("unsolved_problems") or [], 1):
         if isinstance(u, dict):
             lines.append(f"### Problem {i}")
@@ -35,7 +49,7 @@ def write_ideator_report(state: Dict[str, Any], review_dir: Path) -> Path:
             lines.append("")
     if not state.get("unsolved_problems"):
         lines += ["(none)", ""]
-    lines.extend(["---", "## 3. Research-Worthy Directions", ""])
+    lines.extend(["---", "## 4. Research-Worthy Directions", ""])
     for i, r in enumerate(state.get("research_worthy") or [], 1):
         if isinstance(r, dict):
             lines.append(f"### Direction {i}")
@@ -44,7 +58,7 @@ def write_ideator_report(state: Dict[str, Any], review_dir: Path) -> Path:
             lines.append("")
     if not state.get("research_worthy"):
         lines += ["(none)", ""]
-    lines.extend(["---", "## 4. Proposals (Motivation + Idea + Challenges)", ""])
+    lines.extend(["---", "## 5. Proposals (Motivation + Idea + Challenges)", ""])
     for i, p in enumerate(state.get("proposals") or [], 1):
         if isinstance(p, dict):
             lines.append(f"### Proposal {i}")
@@ -60,7 +74,7 @@ def write_ideator_report(state: Dict[str, Any], review_dir: Path) -> Path:
             lines.append("")
     if not state.get("proposals"):
         lines += ["(none)", ""]
-    lines.extend(["---", "## 5. Hypotheses", ""])
+    lines.extend(["---", "## 6. Hypotheses", ""])
     for i, h in enumerate(state.get("hypotheses") or [], 1):
         if isinstance(h, dict):
             lines.append(f"### {h.get('id', f'H{i}')}")
@@ -102,6 +116,63 @@ def write_deep_research_report(state: Dict[str, Any], review_dir: Path, round_n:
     lines.extend(["", "---", "## 4. Metrics Checklist", ""])
     lines.extend([f"- {x}" for x in metrics])
     lines.extend(["", "---", "## 5. Gap Summary", "", gap, ""])
+
+    # Comparison matrix (from upgraded DeepResearcher)
+    comp_matrix = deep.get("comparison_matrix") or []
+    if comp_matrix:
+        lines.extend(["---", "## 6. Comparison Matrix", ""])
+        lines.append("| Method | Task | Dataset | Best Metric | Limitation |")
+        lines.append("|---|---|---|---|---|")
+        for cm in comp_matrix:
+            if isinstance(cm, dict):
+                lines.append(
+                    f"| {cm.get('method', '')} | {cm.get('task', '')} | "
+                    f"{cm.get('dataset', '')} | {cm.get('best_metric', '')} | "
+                    f"{cm.get('limitation', '')} |"
+                )
+        lines.append("")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def write_skeptic_report(state: Dict[str, Any], review_dir: Path) -> Path:
+    """Write Skeptic output to Markdown for human review."""
+    out_path = review_dir / "04_skeptic.md"
+    skeptic = state.get("skeptic_output") or {}
+    lines = [
+        "# Skeptic Report (Adversarial Review)",
+        "",
+        "## 1. Contribution Statement",
+        "",
+        skeptic.get("contribution_statement") or "(none)",
+        "",
+        f"**Novelty verdict**: {skeptic.get('novelty_verdict', '?')}",
+        "",
+        "---",
+        "## 2. Rejection Risks",
+        "",
+    ]
+    for r in skeptic.get("rejection_risks") or []:
+        lines.append(f"- {r}")
+    if not skeptic.get("rejection_risks"):
+        lines.append("(none)")
+    lines.extend(["", "---", "## 3. Required Experiments", ""])
+    for e in skeptic.get("required_experiments") or []:
+        lines.append(f"- {e}")
+    if not skeptic.get("required_experiments"):
+        lines.append("(none)")
+    lines.extend(["", "---", "## 4. Threats to Validity", ""])
+    for t in skeptic.get("threats_to_validity") or []:
+        lines.append(f"- {t}")
+    if not skeptic.get("threats_to_validity"):
+        lines.append("(none)")
+    lines.extend(["", "---", "## 5. Methodology Gaps", ""])
+    for g in skeptic.get("methodology_gaps") or []:
+        lines.append(f"- {g}")
+    if not skeptic.get("methodology_gaps"):
+        lines.append("(none)")
+    lines.append("")
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
 

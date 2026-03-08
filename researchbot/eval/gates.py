@@ -141,6 +141,89 @@ def section_minimum_length(sections: Dict[str, str], min_words: int = 30) -> tup
     return len(reasons) == 0, reasons
 
 
+def ai_writing_patterns(sections: Dict[str, str]) -> tuple:
+    """Check for common AI-generated writing patterns."""
+    ai_phrases = [
+        "delve into", "it is important to note", "it is worth mentioning",
+        "in recent years", "it is crucial", "plays a crucial role",
+        "stands as a testament", "it is worth noting", "as can be seen",
+        "groundbreaking", "revolutionary", "comprehensive framework",
+        "robust approach", "leverage", "in the realm of",
+    ]
+    all_text = " ".join(str(v) for v in sections.values()).lower()
+    found = [p for p in ai_phrases if p in all_text]
+    if len(found) >= 3:
+        return False, [f"AI writing patterns detected ({len(found)}): {', '.join(found[:5])}"]
+    return True, []
+
+
+def limitations_present(sections: Dict[str, str]) -> tuple:
+    """Check that the limitations section exists and has content."""
+    lim = sections.get("limitations") or ""
+    wc = _min_word_count(lim)
+    if wc < 20:
+        return False, [f"Limitations section too short or missing ({wc} words, minimum 20)"]
+    return True, []
+
+
+def contribution_in_abstract(sections: Dict[str, str], contribution_statement: str) -> tuple:
+    """Check that the contribution statement appears in the abstract."""
+    if not contribution_statement:
+        return True, []
+    abstract = (sections.get("abstract") or "").lower()
+    # Check for keyword overlap (at least 40% of significant words)
+    words = re.findall(r'\b\w{5,}\b', contribution_statement.lower())
+    if not words:
+        return True, []
+    matches = sum(1 for w in words if w in abstract)
+    ratio = matches / len(words)
+    if ratio < 0.3:
+        return False, ["Contribution statement not reflected in abstract (< 30% keyword overlap)"]
+    return True, []
+
+
+def baseline_count(baseline_list: List[str], min_count: int = 3) -> tuple:
+    """Check that at least min_count baselines are specified for rigorous comparison."""
+    n = len(baseline_list) if baseline_list else 0
+    if n < min_count:
+        return False, [f"Only {n} baseline(s) specified, minimum {min_count} required for rigorous comparison"]
+    return True, []
+
+
+def results_have_statistics(sections: Dict[str, str]) -> tuple:
+    """Check that results section includes statistical reporting elements."""
+    results = (sections.get("results") or "") + (sections.get("experiments") or "")
+    if not results.strip():
+        return True, []
+    reasons = []
+    # Check for mean +/- std notation
+    has_plusminus = bool(re.search(r'±|\\pm|\+/-|plus or minus', results))
+    if not has_plusminus:
+        reasons.append("Results missing mean±SD/SE notation — add statistical variance to reported numbers")
+    # Check for p-value or significance language
+    has_significance = bool(re.search(r'p\s*[<>=]\s*0\.\d|statistically significant|significance test|confidence interval', results, re.IGNORECASE))
+    if not has_significance:
+        reasons.append("Results missing statistical significance language (p-values, confidence intervals)")
+    return len(reasons) == 0, reasons
+
+
+def method_has_formalization(sections: Dict[str, str]) -> tuple:
+    """Check that the method section has formal problem definition."""
+    method = sections.get("method") or ""
+    if _min_word_count(method) < 50:
+        return True, []  # Too short to check — section_minimum_length will catch it
+    # Look for formal notation markers
+    has_formal = bool(re.search(
+        r'\\mathcal|\\mathbb|\\in\b|\\forall|\\exists|given\s+.+?,\s+find|'
+        r'minimize|maximize|objective|formally|definition|denote|notation|'
+        r'let\s+\$|problem\s+formulation|problem\s+statement',
+        method, re.IGNORECASE
+    ))
+    if not has_formal:
+        return False, ["Method section missing formal problem definition or notation paragraph"]
+    return True, []
+
+
 def run_gates(
     stage: str,
     state: Dict[str, Any],
@@ -157,18 +240,124 @@ def run_gates(
         skeptic = state.get("skeptic_output") or {}
         experimenter = state.get("experimenter_output") or {}
 
+        contribution_stmt = state.get("contribution_statement") or ""
         for gate_fn, args in [
             (citation_coverage,            (sections, citation_threshold)),
             (speculation_ratio,            (sections, speculation_threshold)),
             (baseline_checklist,           (deep.get("baseline_checklist", []), min_baselines)),
+            (baseline_count,               (deep.get("baseline_checklist", []),)),
             (skeptic_items_closed,         (skeptic, sections, skeptic_close_ratio)),
             (experiment_evidence_coverage, (sections, experimenter)),
             (abstract_completeness,        (sections,)),
             (cite_key_validity,            (sections, deep.get("annotated_bib", []))),
             (section_minimum_length,       (sections,)),
+            (ai_writing_patterns,          (sections,)),
+            (limitations_present,          (sections,)),
+            (contribution_in_abstract,     (sections, contribution_stmt)),
+            (results_have_statistics,      (sections,)),
+            (method_has_formalization,     (sections,)),
         ]:
             ok, r = gate_fn(*args)
             if not ok:
                 all_passed = False
                 reasons.extend(r)
     return all_passed, reasons
+
+
+def build_actionable_fix_list(
+    gate_reasons: List[str],
+    state: Dict[str, Any],
+) -> List[str]:
+    """Convert gate failure reasons into specific, actionable fix instructions for the Writer.
+
+    Instead of passing raw gate reasons (which are diagnostic), this generates
+    concrete instructions with available keys and section targets.
+    """
+    fixes = []
+    deep = state.get("deep_research_output") or {}
+    bib = deep.get("annotated_bib") or []
+    bib_keys = [b.get("key", "") for b in bib if b.get("key")]
+    exp_plans = (state.get("experimenter_output") or {}).get("experiment_plan") or []
+    exp_ids = [p.get("id", "") for p in exp_plans if isinstance(p, dict) and p.get("id")]
+
+    joined = " ".join(gate_reasons).lower()
+
+    # Citation/tag issues
+    if "no [cite:" in joined or "citation_coverage" in joined:
+        keys_hint = ", ".join(bib_keys[:8])
+        fixes.append(
+            f"Add [CITE:key] tags in intro and related_work sections. "
+            f"Available keys: {keys_hint}. Each paragraph in related_work must have at least one [CITE:key]."
+        )
+    if "not found in annotated_bib" in joined:
+        invalid = [r.split("]")[0].replace("[CITE:", "") for r in gate_reasons if "not found" in r]
+        fixes.append(
+            f"Remove invalid citation keys: {', '.join(invalid[:5])}. "
+            f"Only use these keys: {', '.join(bib_keys[:10])}."
+        )
+    if "no [evid:" in joined or "evid" in joined:
+        ids_hint = ", ".join(exp_ids[:6]) if exp_ids else "exp_1, exp_2"
+        fixes.append(
+            f"Add [EVID:exp_N] tags in results and experiments sections. "
+            f"Available experiment IDs: {ids_hint}. Every numerical claim needs an [EVID:] tag."
+        )
+
+    # Content quality issues
+    if "abstract" in joined and ("missing" in joined or "short" in joined):
+        fixes.append(
+            "Rewrite abstract with all 5 elements: (1) problem context, (2) gap in prior work, "
+            "(3) contribution statement, (4) method summary, (5) key result with [EVID:exp_1]."
+        )
+    if "too short" in joined:
+        short_sections = re.findall(r"section '(\w+)' too short", joined)
+        if short_sections:
+            fixes.append(
+                f"Expand these sections to at least 3 substantive paragraphs: {', '.join(short_sections)}."
+            )
+    if "limitations" in joined:
+        fixes.append(
+            "Add a limitations section (minimum 3 sentences) discussing: "
+            "(1) what the method cannot do, (2) when it might fail, (3) future work."
+        )
+    if "contribution statement not reflected" in joined:
+        contrib = state.get("contribution_statement") or ""
+        fixes.append(
+            f"Ensure the abstract reflects the contribution: '{contrib[:100]}'. "
+            "Use similar keywords and phrasing."
+        )
+
+    # Style issues
+    if "ai writing patterns" in joined:
+        fixes.append(
+            "Remove AI-sounding phrases: replace 'delve into' with 'examine', "
+            "'leverage' with 'use', delete 'it is important to note', "
+            "'in recent years' (cite a specific year instead). Max 2 AI phrases allowed."
+        )
+
+    # Statistical rigor
+    if "statistics" in joined or "mean±" in joined.replace("±", "±"):
+        fixes.append(
+            "Add statistical reporting: use 'mean ± SD (n=X)' format for all numbers, "
+            "include p-values or confidence intervals for main comparisons."
+        )
+    if "formal problem definition" in joined or "formalization" in joined:
+        fixes.append(
+            "Add a 'Problem Formulation' paragraph at the start of the Method section. "
+            "Define notation, input/output formally (e.g., 'Given X, find Y that minimizes ...')."
+        )
+
+    # Skeptic items
+    if "skeptic_items_closed" in joined:
+        skeptic = state.get("skeptic_output") or {}
+        risks = (skeptic.get("rejection_risks") or [])[:3]
+        if risks:
+            fixes.append(
+                f"Address these Skeptic concerns in method/experiments/limitations: "
+                + "; ".join(str(r)[:80] for r in risks)
+            )
+
+    # Fallback: if no specific fix was generated, pass raw reasons
+    if not fixes:
+        fixes = gate_reasons[:5]
+
+    return fixes[:6]

@@ -59,6 +59,7 @@ def run(input_data: dict) -> dict:
     method_outline = input_data.get("method_outline", "")
     bib = input_data.get("annotated_bib", [])
     related_work_draft = input_data.get("related_work_draft") or ""
+    comparison_matrix = input_data.get("comparison_matrix") or []
     hypotheses = input_data.get("hypotheses", [])
     skeptic = input_data.get("skeptic_output") or {}
     experiment_output = input_data.get("experiment_output") or {}
@@ -69,15 +70,25 @@ def run(input_data: dict) -> dict:
     # Truncate large inputs to prevent context overflow
     bib_compact = _truncate_bib(bib)
     exp_compact = _truncate_experiment(experiment_output)
-    # Skeptic: keep only the essential fields
+    # Skeptic: keep only the essential fields (drop methodology_gaps — Writer doesn't need them)
     skeptic_compact = {
         "contribution_statement": skeptic.get("contribution_statement", ""),
         "novelty_verdict": skeptic.get("novelty_verdict", ""),
-        "rejection_risks": (skeptic.get("rejection_risks") or [])[:8],
-        "required_experiments": (skeptic.get("required_experiments") or [])[:6],
+        "rejection_risks": (skeptic.get("rejection_risks") or [])[:6],
+        "required_experiments": (skeptic.get("required_experiments") or [])[:5],
     }
+    # Comparison matrix: keep only top 5 entries, drop paper_key to save tokens
+    comparison_matrix = [
+        {"method": cm.get("method", ""), "limitation": cm.get("limitation", ""),
+         "best_metric": cm.get("best_metric", "")}
+        for cm in (comparison_matrix or [])[:5]
+        if isinstance(cm, dict)
+    ]
 
     system = _load_prompt()
+    comparison_block = ""
+    if comparison_matrix:
+        comparison_block = f"Comparison matrix (use to position your method vs. existing work in method/results):\n{json.dumps(comparison_matrix, indent=2)}\n\n"
     user = (
         f"Paper title: {paper_title}\n"
         f"Topic: {topic}\nVenue: {venue}\n"
@@ -86,6 +97,7 @@ def run(input_data: dict) -> dict:
         f"Method outline:\n{method_outline}\n\n"
         f"Annotated bib (use [CITE:key] with these exact keys):\n{json.dumps(bib_compact, indent=2)}\n\n"
         f"Related work draft (use as base for related_work section):\n{related_work_draft}\n\n"
+        f"{comparison_block}"
         f"Hypotheses:\n{json.dumps(hypotheses, indent=2)}\n\n"
         f"Skeptic review (address rejection_risks in method/experiments/limitations):\n{json.dumps(skeptic_compact, indent=2)}\n\n"
         f"Experiment results (use [EVID:exp_N] / [EVID:ablation_N] tags):\n{json.dumps(exp_compact, indent=2)}\n\n"

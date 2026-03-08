@@ -1,5 +1,7 @@
-"""Scout: 粗文献探索 + 筛选。Prompt 来自 skills/scout/SKILL.md；必须能访问网络。"""
+"""Scout: systematic literature triage + hypothesis selection. Prompt from skills/scout/SKILL.md."""
 import json
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from researchbot.tools.search import search as web_search
 
@@ -7,10 +9,32 @@ def _load_prompt() -> str:
     from researchbot.tools.skills_loader import get_skill_prompt
     return get_skill_prompt("scout")
 
+
+def _build_keyword_variants(topic: str) -> list:
+    """Extract core concepts and build search variant queries."""
+    # Split topic into key phrases for targeted searches
+    words = [w for w in re.findall(r'\b\w{4,}\b', topic) if w.lower() not in {
+        "this", "that", "with", "from", "have", "been", "will", "should",
+        "could", "would", "more", "than", "also", "each", "such", "very",
+        "using", "based", "about", "into", "only", "their", "other",
+    }]
+    variants = []
+    # Pair-wise keyword combinations for targeted search
+    if len(words) >= 4:
+        variants.append(f"{words[0]} {words[1]} {words[2]}")
+        variants.append(f"{words[0]} {words[-1]} {words[len(words)//2]}")
+    # Method-focused variant
+    variants.append(f"{topic} method algorithm")
+    # Benchmark/evaluation variant
+    variants.append(f"{topic} benchmark evaluation comparison")
+    return variants[:4]
+
+
 def run(input_data: dict) -> dict:
     """
     Input: hypotheses (list of HypothesisCards), optional topic
-    先通过网络搜索获取与 topic/hypotheses 相关的论文与博客，再让 LLM 产出 related_work、新颖性/可行性、selected_ids。
+    Multi-source search with keyword variants + citation-aware queries,
+    then LLM produces related_work, novelty/feasibility scores, selected_ids.
     Output: related_work map, novelty/feasibility scores, selected_ids, rationale
     """
     hypotheses = input_data.get("hypotheses", [])
@@ -18,16 +42,30 @@ def run(input_data: dict) -> dict:
     preferred_focus = (input_data.get("preferred_focus") or "").strip().lower()
     system = _load_prompt()
 
-    # Explorer：必须访问网络，查询论文/blog
-    # 学术论文查询用 ArXiv（精准），博客/survey 用 web
-    web_results: list = []
+    # Build search queries: core topic + keyword variants + hypothesis claims
+    search_queries = []  # (query, max_results, source)
     if topic:
-        web_results.extend(web_search(f"{topic}", max_results=6, source="arxiv"))
-        web_results.extend(web_search(f"{topic} survey overview", max_results=4, source="web"))
+        # Core topic searches
+        search_queries.append((topic, 6, "arxiv"))
+        search_queries.append((f"{topic} survey overview", 4, "web"))
+        # Keyword variant searches for broader coverage
+        for variant in _build_keyword_variants(topic):
+            search_queries.append((variant, 3, "arxiv"))
+    # Hypothesis-specific searches
     for h in hypotheses[:5]:
         claim = (h.get("claim") or "")[:80]
         if claim:
-            web_results.extend(web_search(f"{claim}", max_results=3, source="arxiv"))
+            search_queries.append((claim, 3, "arxiv"))
+
+    # Parallel search execution
+    web_results: list = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(web_search, q, n, src) for q, n, src in search_queries]
+        for future in as_completed(futures):
+            try:
+                web_results.extend(future.result())
+            except Exception:
+                pass
 
     # 去重（按 url 或 title）
     seen = set()

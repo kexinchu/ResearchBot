@@ -39,7 +39,8 @@ def run(input_data: dict) -> dict:
         user += "\n".join(f"- {f}" for f in fix_list) + "\n\n"
     user += (
         "Output valid JSON only. Required top-level keys: "
-        "related_work_summary, unsolved_problems, research_worthy, proposals, "
+        "related_work_summary, gap_analysis (array of objects with type/gap/opportunity/feasibility), "
+        "unsolved_problems, research_worthy, proposals, "
         "paper_title, contribution_statement, contribution_type, hypotheses (array of 3-8 objects)."
     )
 
@@ -73,6 +74,7 @@ def run(input_data: dict) -> dict:
 
     return {
         "related_work_summary": out.get("related_work_summary") or "",
+        "gap_analysis": _norm_list("gap_analysis", ["type", "gap", "opportunity"]),
         "unsolved_problems": _norm_list("unsolved_problems", ["problem", "context"]),
         "research_worthy": _norm_list("research_worthy", ["problem", "rationale"]),
         "proposals": _norm_list("proposals", ["motivation", "idea", "challenges"]),

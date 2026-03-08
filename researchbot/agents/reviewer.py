@@ -14,6 +14,8 @@ VENUES: Dict[str, tuple] = {
     "vldb":    ("VLDB",    _SKILL_DIR / "vldb.md"),
     "neurips": ("NeurIPS", _SKILL_DIR / "neurips.md"),
     "aaai":    ("AAAI",    _SKILL_DIR / "aaai.md"),
+    "icml":    ("ICML",    _SKILL_DIR / "icml.md"),
+    "iclr":    ("ICLR",    _SKILL_DIR / "iclr.md"),
 }
 
 PASS_SCORE = 4  # overall score threshold for acceptance
@@ -27,17 +29,18 @@ _VENUE_KEYWORD_MAP: Dict[str, List[str]] = {
     "database": ["vldb", "aaai"],
     "vldb":     ["vldb", "mlsys"],
     "sigmod":   ["vldb", "mlsys"],
-    "neurips":  ["neurips", "aaai"],
-    "nips":     ["neurips", "aaai"],
-    "icml":     ["neurips", "aaai"],
-    "iclr":     ["neurips", "aaai"],
+    "neurips":  ["neurips", "icml"],
+    "nips":     ["neurips", "icml"],
+    "icml":     ["icml", "neurips"],
+    "iclr":     ["iclr", "neurips"],
     "aaai":     ["aaai", "neurips"],
     "ijcai":    ["aaai", "neurips"],
-    "cvpr":     ["neurips", "aaai"],
+    "cvpr":     ["neurips", "iclr"],
     "acl":      ["neurips", "aaai"],
     "kdd":      ["vldb", "neurips"],
     "www":      ["vldb", "aaai"],
-    "workshop": ["neurips", "mlsys"],  # workshops are common at ML venues
+    "colm":     ["iclr", "neurips"],
+    "workshop": ["neurips", "icml"],
 }
 
 
