@@ -71,55 +71,236 @@ def _unwrap_single_list(text: str) -> str:
     return text
 
 
-def _extract_json(text: str) -> str:
-    """Try multiple strategies to extract valid JSON from LLM output."""
+def _escape_newlines_in_strings(text: str) -> str:
+    """Escape literal newlines (and other control chars) inside JSON string values.
+
+    Walks the text tracking quote state; only modifies characters inside "...".
+    """
+    result = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if esc:
+            result.append(ch)
+            esc = False
+            continue
+        if ch == '\\' and in_str:
+            result.append(ch)
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            result.append(ch)
+            continue
+        if in_str:
+            if ch == '\n':
+                result.append('\\n')
+                continue
+            if ch == '\r':
+                result.append('\\r')
+                continue
+            if ch == '\t':
+                result.append('\\t')
+                continue
+            # Strip other control characters
+            if ord(ch) < 0x20:
+                result.append(' ')
+                continue
+        result.append(ch)
+    return ''.join(result)
+
+
+def _repair_json_string(text: str) -> str:
+    """Attempt to repair common JSON issues from browser-extracted text.
+
+    Level 1: remove known ChatGPT citation artifacts, then escape newlines in strings.
+    """
+    # Remove ChatGPT citation artifacts that may have leaked into JSON
+    # Pattern: source_name on its own line, then +N on next line
+    text = re.sub(
+        r'\n(?:arXiv|Wikipedia|Semantic Scholar|Google Scholar|'
+        r'GitHub|Medium|docs|Papers with Code|OpenReview)[^\n]*\n\+\d+\n',
+        ' ', text
+    )
+    # Standalone "+N" on its own line
+    text = re.sub(r'\n\+\d+\n', ' ', text)
+    # Isolated source names on their own line
+    text = re.sub(r'\n(?:arXiv|Wikipedia)\n', ' ', text)
+
+    return _escape_newlines_in_strings(text)
+
+
+def _aggressive_repair_json(text: str) -> str:
+    """Level 2 aggressive repair: strip anything that looks like a web UI artifact.
+
+    Applied when standard repair fails. More likely to lose some content but
+    produces parseable JSON.
+    """
+    # First apply standard repair
+    text = _repair_json_string(text)
+
+    # If still fails, the artifacts might be inline (not on their own lines).
+    # Strip any word followed by +N that doesn't look like normal text.
+    # e.g. "retrieval. arXiv +1 The paper" → "retrieval.  The paper"
+    text = re.sub(
+        r'(?:arXiv|Wikipedia|Semantic Scholar|Google Scholar|'
+        r'GitHub|Medium|docs|Papers with Code|OpenReview)'
+        r'\s*\+\d+',
+        '', text
+    )
+    # Remove isolated "+N" (not part of math like "x+1")
+    text = re.sub(r'(?<=[.,:;!?\s])\+\d+(?=[\s",.}])', '', text)
+    # Remove stray superscript-like numbers after periods (e.g. ".1 2")
+    text = re.sub(r'(?<=\.)\s*\d+\s+\d+\s*(?=[A-Z"])', ' ', text)
+    # Collapse multiple spaces
+    text = re.sub(r'  +', ' ', text)
+
+    return text
+
+
+def _try_parse(text: str) -> str:
+    """Try to parse text as JSON, with escalating repair. Returns valid JSON string or None."""
     # 1. Direct parse
     try:
         json.loads(text)
         return _unwrap_single_list(text)
     except json.JSONDecodeError:
         pass
+    # 2. Standard repair (escape newlines in strings, remove known artifacts)
+    repaired = _repair_json_string(text)
+    try:
+        json.loads(repaired)
+        return _unwrap_single_list(repaired)
+    except json.JSONDecodeError:
+        pass
+    # 3. Aggressive repair (strip more patterns)
+    aggressive = _aggressive_repair_json(text)
+    try:
+        json.loads(aggressive)
+        return _unwrap_single_list(aggressive)
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _find_balanced_block(text: str, start_ch: str, end_ch: str) -> str:
+    """Find the first balanced {..} or [..] block in text using depth tracking."""
+    start = text.find(start_ch)
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text[start:], start):
+        if esc:
+            esc = False
+            continue
+        if ch == '\\' and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == start_ch:
+            depth += 1
+        elif ch == end_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _extract_json(text: str) -> str:
+    """Try multiple strategies to extract valid JSON from LLM output.
+
+    Strongly prefers JSON objects ({...}) over arrays ([...]) to avoid
+    returning a tags array when the full note object is present but damaged.
+    """
+    # 1. Direct parse (with repair)
+    result = _try_parse(text)
+    if result:
+        return result
     # 2. Markdown code block
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         candidate = m.group(1).strip()
-        try:
-            json.loads(candidate)
-            return _unwrap_single_list(candidate)
-        except json.JSONDecodeError:
-            pass
-    # 3. First valid JSON object or array
-    for start_ch, end_ch in [('{', '}'), ('[', ']')]:
-        start = text.find(start_ch)
-        if start < 0:
-            continue
-        depth = 0
-        in_str = False
-        esc = False
-        for i, ch in enumerate(text[start:], start):
-            if esc:
-                esc = False
-                continue
-            if ch == '\\' and in_str:
-                esc = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == start_ch:
-                depth += 1
-            elif ch == end_ch:
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:i + 1]
-                    try:
-                        json.loads(candidate)
-                        return _unwrap_single_list(candidate)
-                    except json.JSONDecodeError:
-                        break
+        result = _try_parse(candidate)
+        if result:
+            return result
+
+    # 3. Try to find and parse a JSON object ({...}) first — strongly preferred
+    obj_block = _find_balanced_block(text, '{', '}')
+    if obj_block:
+        result = _try_parse(obj_block)
+        if result:
+            return result
+        # Object found but couldn't parse — try last-resort line-by-line rebuild
+        result = _last_resort_json_repair(obj_block)
+        if result:
+            return result
+
+    # 4. Fall back to JSON array ([...]) only if no object was found or parseable
+    arr_block = _find_balanced_block(text, '[', ']')
+    if arr_block:
+        result = _try_parse(arr_block)
+        if result:
+            # Only return array if no object block existed at all
+            parsed = json.loads(result)
+            if obj_block and isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                # This looks like a tags array, not the main response — skip it
+                pass
+            else:
+                return result
+
+    # 5. If we had an object block, return best-effort even if not valid JSON
+    if obj_block:
+        repaired = _aggressive_repair_json(obj_block)
+        return repaired
+
     return text
+
+
+def _last_resort_json_repair(text: str) -> str:
+    """Last-resort repair: rebuild JSON by extracting key-value pairs with regex.
+
+    When all other repair strategies fail, extract "key": "value" pairs from
+    the damaged JSON and reconstruct a clean object.
+    """
+    try:
+        # Try to find all "key": "value" pairs (string values)
+        str_pairs = re.findall(
+            r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.|"(?=\s*,|\s*}))*?)"',
+            text, re.DOTALL
+        )
+        # Find "key": [...] pairs (array values)
+        arr_pairs = re.findall(
+            r'"(\w+)"\s*:\s*(\[(?:[^\[\]]|\[(?:[^\[\]])*\])*\])',
+            text
+        )
+
+        if not str_pairs and not arr_pairs:
+            return None
+
+        obj = {}
+        for key, val in str_pairs:
+            # Clean the value: remove artifacts, normalize whitespace
+            val = re.sub(r'\s+', ' ', val).strip()
+            obj[key] = val
+        for key, val in arr_pairs:
+            try:
+                obj[key] = json.loads(val)
+            except json.JSONDecodeError:
+                obj[key] = val
+
+        if obj:
+            result = json.dumps(obj, ensure_ascii=False)
+            json.loads(result)  # verify
+            return result
+    except Exception:
+        pass
+    return None
 
 
 def _is_valid_json(text: str) -> bool:
@@ -131,8 +312,13 @@ def _is_valid_json(text: str) -> bool:
 
 
 def _is_browser_mode() -> bool:
+    """Auto-detect: use browser if explicitly set OR if no API key is configured."""
     from researchbot import config
-    return bool(config.USE_BROWSER_LLM)
+    if config.USE_BROWSER_LLM:
+        return True
+    # No API key → fallback to browser
+    api_key = config.get_openai_api_key()
+    return not api_key or api_key == "sk-placeholder"
 
 
 def call_llm(

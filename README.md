@@ -13,6 +13,11 @@ researchbot note [--type idea]     # Create a structured note → Obsidian
 researchbot explore <topic>        # Deep research exploration → report
 researchbot experiment <idea>      # Quick experiment design → code scaffolds
 researchbot index                  # Index Obsidian vault into RAG
+
+# for cache within the session, can open/close an session 
+researchbot browser start
+researchbot browser new    # create new session
+researchbot browser stop
 ```
 
 ---
@@ -107,13 +112,12 @@ ResearchBot auto-creates this structure inside your vault:
 
 ```
 <vault>/
-├── 论文/                    # Paper reading notes (by type)
-│   ├── MLSys/
-│   ├── LLM/
-│   ├── Agents/
-│   ├── RAG/
-│   ├── ...
-│   └── Other/
+├── Papers-ANNS/             # Paper reading notes (by type)
+├── Papers-RAG/
+├── Papers-LLM-Opt/
+├── Papers-KV-Cache/
+├── Papers-.../
+├── Papers-Other/
 ├── Idea/                    # Research ideas
 └── Explore/                 # Exploration reports
 ```
@@ -176,20 +180,19 @@ Customize how papers are classified. Default categories cover systems/ML researc
 
 ```yaml
 paper_types:
-  - MLSys
-  - Systems
-  - LLM
-  - Agents
+  - ANNS
   - RAG
-  - Retrieval
-  - VectorSearch
-  - Databases
-  - Security
-  - Multimodal
+  - Diffusion-Language-Model
+  - LLM-Opt
+  - Agentic-OS
+  - KV-Cache
+  - LLM-Security
+  - Memory
+  - Deterministic-LLM
   - Other
 ```
 
-Edit this list to add/remove categories (e.g., add `RL`, `NLP`, `CV`). The classifier uses keyword matching + LLM to assign types.
+Edit this list in `config.yaml` to add/remove categories. The classifier uses keyword matching + LLM to assign types. Papers are stored in `Papers-<type>/` folders (e.g., `Papers-ANNS/`, `Papers-KV-Cache/`).
 
 ### Full config.yaml example
 
@@ -212,16 +215,15 @@ rag:
   embedding_model: "all-MiniLM-L6-v2"
 
 paper_types:
-  - MLSys
-  - Systems
-  - LLM
-  - Agents
+  - ANNS
   - RAG
-  - Retrieval
-  - VectorSearch
-  - Databases
-  - Security
-  - Multimodal
+  - Diffusion-Language-Model
+  - LLM-Opt
+  - Agentic-OS
+  - KV-Cache
+  - LLM-Security
+  - Memory
+  - Deterministic-LLM
   - Other
 ```
 
@@ -261,8 +263,8 @@ What happens:
 2. Fetches metadata (title, authors, abstract, year, venue)
 3. Checks Zotero for duplicates, adds if new (with PDF attachment)
 4. Classifies paper type via keyword matching + LLM
-5. Generates structured reading note (problem → motivation → method → results → limitations → relevance)
-6. Writes to Obsidian: `论文/<paper_type>/<title>.md`
+5. Generates structured reading note (problem → importance → method [motivation/challenge/design] → results → summary → limitations → insights)
+6. Writes to Obsidian: `Papers-<paper_type>/<title>.md`
 7. Indexes into RAG
 
 ### Create a note
@@ -274,7 +276,7 @@ researchbot note --type idea                        # force idea type
 echo "What if we..." | researchbot note --type idea # from stdin
 ```
 
-Auto-detects whether input is a paper note or research idea. Ideas go to `Idea/`, paper notes go to `论文/<type>/`.
+Auto-detects whether input is a paper note or research idea. Ideas go to `Idea/`, paper notes go to `Papers-<type>/`.
 
 ### Explore a research topic
 
@@ -311,7 +313,7 @@ researchbot index --vault ~/MyVault # index specific vault
 
 All notes use YAML frontmatter for machine-parsability and RAG indexing.
 
-### Paper note (`论文/<type>/<title>.md`)
+### Paper note (`Papers-<type>/<title>.md`)
 
 ```yaml
 ---

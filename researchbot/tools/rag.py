@@ -34,12 +34,19 @@ def _get_client(rag_dir: Path):
 def _get_embedding_function():
     try:
         from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-        from researchbot.config import get_rag_embedding_model
+        from researchbot.config import get_rag_embedding_model, get_hf_token
+
+        # Set HF token for gated model downloads if configured
+        hf_token = get_hf_token()
+        if hf_token:
+            os.environ.setdefault("HF_TOKEN", hf_token)
+
         return SentenceTransformerEmbeddingFunction(
             model_name=get_rag_embedding_model(),
             normalize_embeddings=True,
         )
-    except Exception:
+    except Exception as e:
+        print(f"[rag] Embedding function init failed: {e}")
         return None
 
 

@@ -18,14 +18,28 @@ def generate_paper_note(meta: PaperMetadata) -> PaperNote:
 
     user = f"Title: {meta.title}\n\nAbstract: {meta.abstract}\n\nOutput JSON only."
 
-    raw = call_llm(system, user, json_mode=True, max_tokens=2500)
+    raw = call_llm(system, user, json_mode=True, max_tokens=4000)
     try:
         data = json.loads(raw)
+        # Browser LLM sometimes wraps the JSON object in a list
+        if isinstance(data, list) and len(data) > 0:
+            data = data[0]
+        if not isinstance(data, dict):
+            print(f"[note_generator] WARNING: LLM returned non-dict type: {type(data).__name__}", flush=True)
+            data = {}
     except json.JSONDecodeError:
+        print(f"[note_generator] WARNING: Failed to parse LLM response as JSON.", flush=True)
+        print(f"[note_generator] Raw response (first 500 chars): {raw[:500]}", flush=True)
         data = {}
+
+    if not data or not any(data.get(k) for k in ("problem", "design", "summary")):
+        print(f"[note_generator] WARNING: LLM returned empty or incomplete note data.", flush=True)
+        if raw:
+            print(f"[note_generator] Raw response (first 500 chars): {raw[:500]}", flush=True)
 
     note = PaperNote(
         title=meta.title,
+        system_name=data.get("system_name", ""),
         paper_type=meta.paper_type,
         authors=meta.authors,
         year=meta.year,
@@ -37,6 +51,7 @@ def generate_paper_note(meta: PaperMetadata) -> PaperNote:
         motivation=data.get("motivation", ""),
         challenge=data.get("challenge", ""),
         design=data.get("design", ""),
+        related_work=data.get("related_work", ""),
         key_results=data.get("key_results", ""),
         summary=data.get("summary", ""),
         limitations=data.get("limitations", ""),

@@ -472,7 +472,7 @@ def _is_generating() -> bool:
     return False
 
 
-def _wait_for_completion(start_timeout: float = 15.0, max_wait: float = 300.0) -> None:
+def _wait_for_completion(start_timeout: float = 15.0, max_wait: float = 900.0) -> None:
     """Wait for generation to start, then wait for it to finish. Log progress every 30s."""
     # Phase 1: wait for the stop button to appear (generation started)
     deadline = time.time() + start_timeout
@@ -496,15 +496,59 @@ def _wait_for_completion(start_timeout: float = 15.0, max_wait: float = 300.0) -
     time.sleep(0.8)  # Small stability buffer after stream ends
 
 
+def _clean_chatgpt_artifacts(text: str) -> str:
+    """Remove ChatGPT web UI artifacts from extracted text.
+
+    ChatGPT's citation bubbles (e.g. 'arXiv +1', 'Wikipedia'), source links,
+    and other UI elements get captured by inner_text(). This cleans them out.
+    """
+    import re
+    # Remove citation markers like "arXiv\n+1\n" or "Wikipedia\n+2\n" or standalone "\n+1\n"
+    # These appear as: source_name \n +N \n  (where N is a number)
+    text = re.sub(r'\n(?:arXiv|Wikipedia|Semantic Scholar|Google Scholar|GitHub|Medium|docs|Papers with Code|OpenReview)[^\n]*\n\+\d+\n', '\n', text)
+    # Standalone "+N" on its own line (leftover citation count)
+    text = re.sub(r'\n\+\d+\n', '\n', text)
+    # Isolated source names on their own line followed by nothing useful
+    text = re.sub(r'\narXiv\n', '\n', text)
+    text = re.sub(r'\nWikipedia\n', '\n', text)
+    # Remove "Sources" or "참고" section at the very end (ChatGPT sometimes appends)
+    text = re.sub(r'\n(?:Sources|参考文献|References)\s*$', '', text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def _get_last_response() -> str:
-    """Extract the text of the last assistant message."""
+    """Extract the text of the last assistant message, cleaning ChatGPT UI artifacts."""
+    # Try to extract using JS that skips citation/source elements
+    for sel in _RESPONSE_SELECTORS:
+        try:
+            els = _page.query_selector_all(sel)
+            if els:
+                # Use JS to get text while excluding citation bubbles
+                text = _page.evaluate("""(el) => {
+                    // Clone to avoid modifying the page
+                    const clone = el.cloneNode(true);
+                    // Remove citation/source elements
+                    clone.querySelectorAll(
+                        'a[href*="citation"], [class*="citation"], [class*="source"], ' +
+                        '[data-testid*="citation"], sup, [class*="footnote"], ' +
+                        'button[class*="ref"], [class*="hover-card"]'
+                    ).forEach(e => e.remove());
+                    return clone.innerText;
+                }""", els[-1])
+                text = text.strip() if text else ""
+                if text:
+                    return _clean_chatgpt_artifacts(text)
+        except Exception:
+            pass
+
+    # Fallback: plain inner_text with cleanup
     for sel in _RESPONSE_SELECTORS:
         try:
             els = _page.query_selector_all(sel)
             if els:
                 text = els[-1].inner_text().strip()
                 if text:
-                    return text
+                    return _clean_chatgpt_artifacts(text)
         except Exception:
             pass
 
@@ -515,7 +559,7 @@ def _get_last_response() -> str:
             if els:
                 text = els[-1].inner_text().strip()
                 if text:
-                    return text
+                    return _clean_chatgpt_artifacts(text)
         except Exception:
             pass
 
@@ -557,11 +601,32 @@ def call_llm_browser(
 ) -> str:
     """Send system+user prompt to ChatGPT via browser; return response text.
 
-    When same_session is True and start_browser_session() was called (e.g. by
-    the pipeline), the first call opens a new chat; later calls append a user
-    message in the same conversation without navigating away (one task, one
-    session). All calls are serialized by a lock.
+    Tries the persistent browser daemon first (keeps browser alive across CLI
+    calls). Falls back to in-process browser if daemon is unavailable.
     """
+    # ── Try daemon first (persistent browser across CLI invocations) ─────
+    try:
+        from researchbot.tools.browser_daemon import ensure_daemon_running, daemon_chat
+        ensure_daemon_running()
+        return daemon_chat(
+            system=system, user=user, json_mode=json_mode,
+            max_tokens=max_tokens, same_session=same_session,
+        )
+    except Exception as e:
+        print(f"[browser_llm] Daemon unavailable ({e}), using in-process browser.", flush=True)
+
+    # ── Fallback: in-process browser (original logic) ────────────────────
+    return _call_llm_browser_inprocess(system, user, json_mode, max_tokens, same_session)
+
+
+def _call_llm_browser_inprocess(
+    system: str,
+    user: str,
+    json_mode: bool = False,
+    max_tokens: Optional[int] = None,
+    same_session: bool = True,
+) -> str:
+    """Original in-process browser call (fallback when daemon is not usable)."""
     global _session_message_count
     json_suffix = ""
     if json_mode:

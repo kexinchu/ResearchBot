@@ -1,7 +1,4 @@
 """Zotero integration via pyzotero."""
-import os
-import tempfile
-import urllib.request
 from typing import Optional
 
 from researchbot.models import PaperMetadata
@@ -117,13 +114,6 @@ def add_paper(meta: PaperMetadata, collection_name: Optional[str] = None) -> str
         failed = resp.get("failed", {})
         raise RuntimeError(f"Failed to create Zotero item: {failed}")
 
-    # Attach PDF if available
-    if meta.pdf_url:
-        try:
-            _attach_pdf(zot, item_key, meta.pdf_url, meta.title)
-        except Exception as e:
-            print(f"[zotero] PDF attachment failed: {e}")
-
     return item_key
 
 
@@ -143,18 +133,3 @@ def _ensure_collection(zot, name: str) -> str:
     raise RuntimeError(f"Failed to create Zotero collection: {name}")
 
 
-def _attach_pdf(zot, parent_key: str, pdf_url: str, title: str) -> None:
-    """Download and attach a PDF to a Zotero item."""
-    # Download to temp file
-    headers = {"User-Agent": "ResearchBot/1.0"}
-    req = urllib.request.Request(pdf_url, headers=headers)
-    safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:80]
-    with tempfile.NamedTemporaryFile(suffix=".pdf", prefix=f"{safe_title}_", delete=False) as tmp:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            tmp.write(resp.read())
-        tmp_path = tmp.name
-
-    try:
-        zot.attachment_simple([tmp_path], parent_key)
-    finally:
-        os.unlink(tmp_path)

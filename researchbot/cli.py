@@ -10,6 +10,10 @@ def cmd_record(args):
     from researchbot.scholar.note_generator import generate_paper_note
     from researchbot.scholar.obsidian_writer import write_paper_note
 
+    if args.browser:
+        from researchbot import config
+        config.set_use_browser_llm(True)
+
     url = args.url
     print(f"[record] Processing: {url}")
 
@@ -79,6 +83,10 @@ def cmd_note(args):
     from researchbot.scholar.note_generator import generate_paper_note, generate_idea_note
     from researchbot.scholar.obsidian_writer import write_paper_note, write_idea_note
     from researchbot.models import PaperMetadata
+
+    if args.browser:
+        from researchbot import config
+        config.set_use_browser_llm(True)
 
     # Read input
     if args.input:
@@ -215,6 +223,49 @@ def cmd_index(args):
     print(f"[index] Done. Indexed {count} document chunks.")
 
 
+def cmd_browser(args):
+    """Manage the persistent browser daemon for ChatGPT."""
+    from researchbot.tools.browser_daemon import (
+        is_daemon_alive, ensure_daemon_running, stop_daemon, read_daemon_info,
+        daemon_new_session,
+    )
+
+    action = args.action
+
+    if action == "start":
+        if is_daemon_alive():
+            pid, port = read_daemon_info()
+            print(f"[browser] Daemon already running (PID {pid}, port {port})")
+        else:
+            print("[browser] Starting browser daemon...")
+            port = ensure_daemon_running()
+            pid, _ = read_daemon_info()
+            print(f"[browser] Daemon started (PID {pid}, port {port})")
+            print("[browser] Browser will stay open until idle timeout or 'researchbot browser stop'")
+
+    elif action == "stop":
+        if stop_daemon():
+            print("[browser] Daemon stopped.")
+        else:
+            print("[browser] No daemon running.")
+
+    elif action == "new":
+        if daemon_new_session():
+            print("[browser] Session reset. Next command will open a new ChatGPT conversation.")
+        else:
+            print("[browser] No daemon running. Start one first: researchbot browser start")
+
+    elif action == "status":
+        if is_daemon_alive():
+            pid, port = read_daemon_info()
+            print(f"[browser] Daemon running (PID {pid}, port {port})")
+        else:
+            print("[browser] Daemon not running.")
+
+    else:
+        print(f"[browser] Unknown action: {action}. Use start/stop/new/status.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="researchbot",
@@ -233,6 +284,7 @@ def main():
     record_p.add_argument("url", help="Paper URL (arXiv, Semantic Scholar, DOI, or direct PDF)")
     record_p.add_argument("--no-zotero", action="store_true", help="Skip Zotero integration")
     record_p.add_argument("--vault", default=None, help="Obsidian vault path (override config)")
+    record_p.add_argument("--browser", action="store_true", help="Use browser-based ChatGPT (no API key)")
 
     # ── note ──
     note_p = subparsers.add_parser("note", help="Create a structured note from text input")
@@ -240,6 +292,7 @@ def main():
                         help="Note type (default: auto-detect)")
     note_p.add_argument("--input", default=None, help="Input file path (alternative to stdin)")
     note_p.add_argument("--vault", default=None, help="Obsidian vault path")
+    note_p.add_argument("--browser", action="store_true", help="Use browser-based ChatGPT (no API key)")
 
     # ── explore ──
     explore_p = subparsers.add_parser("explore", help="Deep research exploration: Ideator → DeepResearcher → Skeptic")
@@ -261,6 +314,11 @@ def main():
     index_p = subparsers.add_parser("index", help="Index Obsidian vault into RAG for context retrieval")
     index_p.add_argument("--vault", default=None, help="Obsidian vault path")
 
+    # ── browser ──
+    browser_p = subparsers.add_parser("browser", help="Manage persistent browser daemon for ChatGPT")
+    browser_p.add_argument("action", choices=["start", "stop", "new", "status"],
+                           help="start: launch daemon, stop: kill daemon, new: fresh ChatGPT conversation, status: check if running")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -275,6 +333,8 @@ def main():
         cmd_experiment(args)
     elif args.command == "index":
         cmd_index(args)
+    elif args.command == "browser":
+        cmd_browser(args)
     else:
         parser.print_help()
         sys.exit(1)

@@ -141,9 +141,10 @@ def _retrieve_from_obsidian(
 
     dirs_to_scan = []
     if include_papers:
-        paper_dir = vault / "论文"
-        if paper_dir.exists():
-            dirs_to_scan.append(paper_dir)
+        # Scan all Papers-<type> directories
+        for d in vault.iterdir():
+            if d.is_dir() and d.name.startswith("Papers-"):
+                dirs_to_scan.append(d)
     if include_ideas:
         idea_dir = vault / "Idea"
         if idea_dir.exists():
@@ -173,7 +174,7 @@ def _retrieve_from_obsidian(
     scored.sort(key=lambda x: x[0], reverse=True)
 
     for score, title, content, path in scored[:max_results]:
-        note_type = "paper" if "/论文/" in path else "idea"
+        note_type = "paper" if "/Papers-" in path else "idea"
         results.append({
             "title": title,
             "text": f"[{note_type}] {title}\n{content[:500]}",

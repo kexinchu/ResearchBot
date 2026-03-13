@@ -23,6 +23,7 @@ class PaperMetadata(BaseModel):
 class PaperNote(BaseModel):
     """A structured reading note for a paper, destined for Obsidian."""
     title: str = ""
+    system_name: str = ""  # system/method name from the paper (e.g. "DiskANN", "vLLM")
     paper_type: str = "Other"
     authors: List[str] = Field(default_factory=list)
     year: Optional[int] = None
@@ -40,6 +41,7 @@ class PaperNote(BaseModel):
     motivation: str = ""
     challenge: str = ""
     design: str = ""
+    related_work: str = ""
     key_results: str = ""
     summary: str = ""
     limitations: str = ""

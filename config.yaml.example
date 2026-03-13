@@ -1,0 +1,85 @@
+# ResearchBot Configuration
+# Copy this file to config.yaml and fill in your values:
+#   cp config.yaml.example config.yaml
+#
+# Place config.yaml at:
+#   ./config.yaml            (project-local, takes priority)
+#   ~/.researchbot/config.yaml  (global, shared across projects)
+#
+# All fields can also be set via environment variables (env vars take precedence over config.yaml)
+
+# ── LLM ──────────────────────────────────────────────────────────────────────
+# Required: at least api_key must be set (here or via OPENAI_API_KEY env var)
+#
+# Supported providers:
+#   - OpenAI:    api_key = your key, base_url = "" (default)
+#   - DeepSeek:  api_key = your key, base_url = "https://api.deepseek.com/v1", model = "deepseek-chat"
+#   - Local:     api_key = "not-needed", base_url = "http://localhost:8000/v1"
+#   - Browser mode: no key needed, use --browser flag on commands
+llm:
+  api_key: ""                        # Your API key (env: OPENAI_API_KEY)
+  base_url: ""                       # Custom endpoint, empty = OpenAI default (env: OPENAI_BASE_URL)
+  model: "gpt-4o-mini"              # Model name (env: RESEARCHBOT_MODEL)
+
+# ── Zotero ───────────────────────────────────────────────────────────────────
+# Optional but recommended. Stores papers with PDF attachments.
+# If not configured, `researchbot record` still works — it just skips Zotero.
+#
+# How to get your API key and library ID:
+#   1. Go to https://www.zotero.org/settings/keys
+#   2. Click "Create new private key"
+#      - Name: "ResearchBot" (or anything you like)
+#      - Check "Allow library access" → "Read/Write"
+#      - Check "Allow write access"
+#      - Save → copy the key string
+#   3. On the same page, look for "Your userID for use in API calls is ..."
+#      That number is your library_id
+#   4. Use library_type "user" for personal library, "group" for shared group library
+zotero:
+  api_key: ""                        # Zotero API key (env: ZOTERO_API_KEY)
+  library_id: ""                     # Your Zotero user ID, numeric (env: ZOTERO_LIBRARY_ID)
+  library_type: "user"               # "user" or "group" (env: ZOTERO_LIBRARY_TYPE)
+
+# ── Obsidian ─────────────────────────────────────────────────────────────────
+# Required: path to your Obsidian vault folder.
+#
+# ResearchBot auto-creates this structure inside your vault:
+#   Papers-<paper_type>/  — paper reading notes (e.g. Papers-ANNS, Papers-RAG)
+#   Idea/                 — research ideas
+#   Explore/              — exploration reports
+#
+# How to find your vault path:
+#   - Open Obsidian → click vault name (bottom-left) → "Manage vaults"
+#   - The path is shown next to your vault name
+#   - Or simply find it in Finder / File Explorer — it's a regular folder
+obsidian:
+  vault_path: "~/ObsidianVault"      # Absolute path to your vault (env: RESEARCHBOT_OBSIDIAN_VAULT)
+
+# ── RAG ──────────────────────────────────────────────────────────────────────
+# Optional. Enables semantic search across your notes during explore/experiment.
+#
+# Setup:
+#   1. pip install researchbot[rag]
+#   2. researchbot index              (build vector index from your vault)
+#
+# After initial indexing, new notes are automatically indexed when created via record/note.
+rag:
+  dir: "~/.researchbot/rag"          # ChromaDB storage path (env: RESEARCHBOT_RAG_DIR)
+  embedding_model: "all-MiniLM-L6-v2"  # sentence-transformers model (env: RESEARCHBOT_RAG_EMBEDDING_MODEL)
+  hf_token: ""                        # HuggingFace token for gated model downloads (env: HF_TOKEN)
+                                       # Get at: https://huggingface.co/settings/tokens
+
+# ── Paper Type Taxonomy ──────────────────────────────────────────────────────
+# Categories for automatic paper classification (keyword matching + LLM).
+# Customize to match your research areas. Add/remove as needed.
+paper_types:
+  - ANNS
+  - RAG
+  - Diffusion-Language-Model
+  - LLM-Opt
+  - Agentic-OS
+  - KV-Cache
+  - LLM-Security
+  - Memory
+  - Deterministic-LLM
+  - Other

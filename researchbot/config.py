@@ -145,19 +145,23 @@ def get_rag_embedding_model() -> str:
     return str(_get("rag", "embedding_model", "RESEARCHBOT_RAG_EMBEDDING_MODEL",
                      "all-MiniLM-L6-v2"))
 
+def get_hf_token() -> Optional[str]:
+    """HuggingFace token for downloading gated/private models."""
+    val = _get("rag", "hf_token", "HF_TOKEN", "")
+    return val if val else None
+
 # ── Paper type taxonomy ───────────────────────────────────────────────────────
 
 DEFAULT_PAPER_TYPES: List[str] = [
-    "MLSys",
-    "Systems",
-    "LLM",
-    "Agents",
+    "ANNS",
     "RAG",
-    "Retrieval",
-    "VectorSearch",
-    "Databases",
-    "Security",
-    "Multimodal",
+    "Diffusion-Language-Model",
+    "LLM-Opt",
+    "Agentic-OS",
+    "KV-Cache",
+    "LLM-Security",
+    "Memory",
+    "Deterministic-LLM",
     "Other",
 ]
 
@@ -217,9 +221,9 @@ zotero:
 # Required: path to your Obsidian vault folder.
 #
 # ResearchBot creates these folders inside your vault:
-#   论文/<paper_type>/   — paper reading notes
-#   Idea/                — research ideas
-#   Explore/             — exploration reports
+#   Papers-<paper_type>/  — paper reading notes (e.g. Papers-ANNS, Papers-RAG)
+#   Idea/                 — research ideas
+#   Explore/              — exploration reports
 #
 # How to find your vault path:
 #   - Open Obsidian → Settings (gear icon) → look at the vault path at the top
@@ -239,21 +243,23 @@ rag:
                                     # Env: RESEARCHBOT_RAG_DIR
   embedding_model: "all-MiniLM-L6-v2"  # sentence-transformers model for embeddings
                                          # Env: RESEARCHBOT_RAG_EMBEDDING_MODEL
+  hf_token: ""                    # HuggingFace token (for gated model downloads)
+                                    # Get at: https://huggingface.co/settings/tokens
+                                    # Env: HF_TOKEN
 
 # ── Paper Type Taxonomy ──────────────────────────────────────────────────────
 # Categories for automatic paper classification.
 # The classifier uses keyword matching + LLM to assign each paper a type.
 # You can customize this list to match your research areas.
 paper_types:
-  - MLSys
-  - Systems
-  - LLM
-  - Agents
+  - ANNS
   - RAG
-  - Retrieval
-  - VectorSearch
-  - Databases
-  - Security
-  - Multimodal
+  - Diffusion-Language-Model
+  - LLM-Opt
+  - Agentic-OS
+  - KV-Cache
+  - LLM-Security
+  - Memory
+  - Deterministic-LLM
   - Other
 """
